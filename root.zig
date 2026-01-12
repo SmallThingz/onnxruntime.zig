@@ -689,7 +689,6 @@ pub const Ep = struct {
     }
   };
 
-
   // this is const everywhere
   /// Represents an instance of an Execution Provider mapped to a specific hardware device.
   /// Wraps OrtEpDevice.
@@ -965,20 +964,41 @@ pub const Ep = struct {
           .ReleaseAllocator = if (@hasDecl(T, "releaseAllocator")) VTable.releaseAllocator else null,
           .CreateDataTransfer = if (@hasDecl(T, "createDataTransfer")) VTable.createDataTransfer else null,
           .IsStreamAware = if (@hasDecl(T, "isStreamAware")) VTable.isStreamAware else null,
-          .CreateSyncStreamForDevice = if (@hasDecl(T, "createSyncStreamForDevice")) VTable.createSyncStream_ else null,
+          .CreateSyncStreamForDevice = if (@hasDecl(T, "createSyncStreamForDevice")) VTable.createSyncStream else null,
         },
       };
     }
   };
 };
 
-const Training = struct {
+pub const Training = struct {
   pub const api = struct {
     pub var underlying: *const Api.c.OrtTrainingApi = undefined;
+
+    
+    /// Sets the seed used for random number generation in Onnxruntime.
+    ///
+    /// Use this function to generate reproducible results. It should be noted that completely reproducible
+    /// results are not guaranteed.
+    pub fn setSeed(seed: i64) !void {
+      try Error.check(api.underlying.SetSeed.?(seed));
+    }
   };
 
   pub const CheckpointState = opaque {
-    /// Load a checkpoint state from a file on disk.
+    /// Load a checkpoint state from a file on disk into checkpoint_state.
+    ///
+    /// This function will parse a checkpoint file, pull relevant data and load the training
+    /// state into the checkpoint_state. This checkpoint state can then be used to create the
+    /// training session by invoking OrtTrainingApi::CreateTrainingSession. By doing so, the training
+    /// session will resume training from the given checkpoint state.
+    /// Note: the training session created with a checkpoint state uses this state to store the entire
+    /// training state (including model parameters, its gradients, the optimizer states and the properties).
+    /// As a result, it is required that the checkpoint state outlive the lifetime of the training session.
+    /// Note: The checkpoint file can be either the complete checkpoint or the nominal checkpoint.
+    ///
+    /// checkpoint_path: Path to the checkpoint file
+    /// checkpoint_state: Checkpoint state that contains the states of the training session.
     pub fn load(path: [*:0]const u8) !*@This() {
       var out: ?*@This() = null;
       try Error.check(api.underlying.LoadCheckpoint.?(path, @ptrCast(&out)));
@@ -996,8 +1016,16 @@ const Training = struct {
       return out orelse error.OutOfMemory;
     }
 
-    /// Save the given state to a checkpoint file on disk.
-    pub fn save(self: *const @This(), path: [*:0]const u8, include_optimizer_state: bool) !void {
+    ///Save the given state to a checkpoint file on disk.
+    ///
+    /// This function serializes the provided checkpoint state to a file on disk.
+    /// This checkpoint can later be loaded by invoking OrtTrainingApi::LoadCheckpoint to resume
+    /// training from this snapshot of the state.
+    ///
+    /// checkpoint_state: The checkpoint state to save.
+    /// checkpoint_path: Path to the checkpoint file.
+    /// include_optimizer_state: Flag to indicate whether to save the optimizer state or not.
+    pub fn save(self: *@This(), path: [*:0]const u8, include_optimizer_state: bool) !void {
       try Error.check(api.underlying.SaveCheckpoint.?(
         @ptrCast(self), 
         path, 
@@ -1005,7 +1033,15 @@ const Training = struct {
       ));
     }
 
-    /// Adds or updates the given property in the checkpoint state.
+    /// Adds or updates the given property to/in the checkpoint state.
+    ///
+    /// Runtime properties such as epoch, training step, best score, and others can be added to the checkpoint
+    /// state by the user by calling this function with the corresponding property name and value.
+    /// The given property name must be unique to be able to successfully add the property.
+    ///
+    /// property_name Name of the property being added or updated.
+    /// property_type Type of the property associated with the given name.
+    /// property_value Property value associated with the given name.
     pub fn addProperty(self: *@This(), name: [*:0]const u8, prop_type: PropertyType, value: *anyopaque) !void {
       try Error.check(api.underlying.AddProperty.?(
         @ptrCast(self),
@@ -1016,7 +1052,12 @@ const Training = struct {
     }
 
     /// Gets the property value associated with the given name from the checkpoint state.
-    /// allocator: Used to allocate the output buffer if the property is a string.
+    ///
+    /// Gets the property value from an existing entry in the checkpoint state. The property must
+    /// exist in the checkpoint state to be able to retrieve it successfully.
+    ///
+    /// property_name: Name of the property being retrieved.
+    /// allocator: Allocator used to allocate the memory for the property_value.
     pub fn getProperty(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !struct { type: PropertyType, value: *anyopaque } {
       var out_type: PropertyType = undefined;
       var out_val: ?*anyopaque = null;
@@ -1027,7 +1068,7 @@ const Training = struct {
         @ptrCast(&out_type),
         &out_val
       ));
-      return .{ .type = @enumFromInt(out_type), .value = out_val orelse return error.OutOfMemory };
+      return .{ .type = out_type, .value = out_val orelse return error.OutOfMemory };
     }
 
     pub const PropertyType = enum(c_uint) {
@@ -1036,6 +1077,49 @@ const Training = struct {
       String = @bitCast(Api.c.OrtStringProperty),
     };
 
+
+    /// Retrieves the type and shape information of the parameter associated with the given parameter name.
+    ///
+    /// This function retrieves the type and shape of the parameter associated with the given parameter name.
+    /// The parameter must exist in the checkpoint state to be able to retrieve its type and shape information successfully.
+    ///
+    /// parameter_name: Name of the parameter being retrieved.
+    pub fn getParameterTypeAndShape(self: *const @This(), name: [*:0]const u8) !*TensorTypeAndShapeInfo.C {
+      var out: ?*TensorTypeAndShapeInfo.C = null;
+      try Error.check(api.underlying.GetParameterTypeAndShape.?(@ptrCast(self), name, @ptrCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Updates the data associated with the model parameter in the checkpoint state for the given parameter name.
+    ///
+    /// This function updates a model parameter in the checkpoint state with the given parameter data.
+    /// The training session must be already created with the checkpoint state that contains the parameter
+    /// being updated. The given parameter is copied over to the registered device for the training session.
+    /// The parameter must exist in the checkpoint state to be able to update it successfully.
+    ///
+    /// parameter_name: Name of the parameter being updated.
+    /// parameter: The parameter data that should replace the existing parameter data.
+    pub fn updateParameter(self: *@This(), name: [*:0]const u8, param: *Value) !void {
+      try Error.check(api.underlying.UpdateParameter.?(@ptrCast(self), name, @ptrCast(param)));
+    }
+
+    /// Gets the data associated with the model parameter from the checkpoint state for the given parameter name.
+    ///
+    /// This function retrieves the model parameter data from the checkpoint state for the given parameter name.
+    /// The parameter is copied over and returned as an OrtValue. The training session must be already created
+    /// with the checkpoint state that contains the parameter being retrieved.
+    /// The parameter must exist in the checkpoint state to be able to retrieve it successfully.
+    ///
+    /// \param[in] checkpoint_state The checkpoint state.
+    /// \param[in] parameter_name Name of the parameter being retrieved.
+    /// \param[in] allocator Allocator used to allocate the memory for the parameter.
+    /// \param[out] parameter The parameter data that is retrieved from the checkpoint state.
+    pub fn getParameter(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
+      var out: ?*Value = null;
+      try Error.check(api.underlying.GetParameter.?(@ptrCast(self), name, @ptrCast(allocator), @ptrCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
     pub fn deinit(self: *@This()) void {
       api.underlying.ReleaseCheckpointState.?(@ptrCast(self));
     }
@@ -1043,19 +1127,32 @@ const Training = struct {
 
   pub const TrainingSession = opaque {
     /// Create a training session that can be used to begin or resume training.
-    /// 
-    /// env: The environment.
-    /// options: Session options.
-    /// checkpoint: The checkpoint state.
-    /// train_model_path: Path to the training model.
-    /// eval_model_path: Optional path to the eval model.
-    /// optimizer_model_path: Optional path to the optimizer model.
+    ///
+    /// This function creates a training session based on the env and session options provided that can
+    /// begin or resume training from a given checkpoint state for the given onnx models.
+    /// The checkpoint state represents the parameters of the training session which will be moved
+    /// to the device specified by the user through the session options (if necessary).
+    /// The training session requires four training artifacts
+    /// - The training onnx model
+    /// - The evaluation onnx model (optional)
+    /// - The optimizer onnx model
+    /// - The checkpoint file
+    ///
+    /// These artifacts can be generated using the `onnxruntime-training` python [utility](https://github.com/microsoft/onnxruntime/blob/main/orttraining/orttraining/python/training/onnxblock/README.md).
+    ///
+    /// env Environment: to be used for the training session.
+    /// options Session: options that the user can customize for this training session.
+    /// checkpoint_state: Training states that the training session uses as a starting point for training.
+    /// train_model_path: Model to be used to perform training.
+    /// eval_model_path: Model to be used to perform evaluation.
+    /// optimizer_model_path: Model to be used to perform gradient descent.
+    /// returns the Created training session.
     pub fn init(
       options: *const Session.Options,
       checkpoint: *CheckpointState,
-      train_model_path: [*:0]const u8,
-      eval_model_path: ?[*:0]const u8,
-      optimizer_model_path: ?[*:0]const u8,
+      train_model_path: Utils.Path,
+      eval_model_path: Utils.Path,
+      optimizer_model_path: Utils.Path,
     ) !*@This() {
       var out: ?*@This() = null;
       try Error.check(api.underlying.CreateTrainingSession.?(
@@ -1070,8 +1167,107 @@ const Training = struct {
       return out orelse error.OutOfMemory;
     }
 
-    /// Computes the outputs of the training model and the gradients of the trainable parameters
-    /// for the given inputs.
+    /// Create a training session that can be used to begin or resume training.
+    /// This api provides a way to load all the training artifacts from buffers instead of files.
+    ///
+    /// options Session: options that the user can customize for this training session.
+    /// checkpoint_state: Training states that the training session uses as a starting point for training.
+    /// train_model_data: Buffer containing the model data to be used to perform training
+    /// eval_model_data: Buffer containing the model data to be used to perform evaluation
+    /// optim_model_data: Buffer containing the model data to be used to perform weight update
+    pub fn initBuffer(
+      options: *const Session.Options,
+      checkpoint: *CheckpointState,
+      train_model_data: []const u8,
+      eval_model_data: []const u8,
+      optimizer_model_data: []const u8,
+    ) !*@This() {
+      var out: ?*@This() = null;
+      try Error.check(api.underlying.CreateTrainingSessionFromBuffer.?(
+        Api.env.underlying,
+        @ptrCast(options),
+        @ptrCast(checkpoint),
+        @ptrCast(train_model_data.ptr),
+        train_model_data.len,
+        @ptrCast(eval_model_data.ptr),
+        eval_model_data.len,
+        @ptrCast(optimizer_model_data.ptr),
+        optimizer_model_data.len,
+        @ptrCast(&out)
+      ));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Retrieves the number of user outputs in the training model.
+    ///
+    /// This function returns the number of outputs of the training model so that the user can
+    /// allocate space for the number of outputs when OrtTrainingApi::TrainStep is invoked.
+    pub fn getTrainingModelOutputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelOutputCount.?(@ptrCast(self), &out));
+      return out;
+    }
+
+    /// Retrieves the number of user outputs in the eval model.
+    ///
+    /// This function returns the number of outputs of the eval model so that the user can
+    /// allocate space for the number of outputs when OrtTrainingApi::EvalStep is invoked.
+    pub fn getEvalModelOutputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(api.underlying.TrainingSessionGetEvalModelOutputCount.?(@ptrCast(self), &out));
+      return out;
+    }
+
+    /// Retrieves the names of user outputs in the training model.
+    ///
+    /// This function returns the names of outputs of the training model that can be associated with the OrtValue(s)
+    /// returned by the OrtTrainingApi::TrainStep function.
+    ///
+    /// index: Index of the output name requested.
+    /// allocator: Allocator to use to allocate the memory for the name.
+    pub fn getTrainingModelOutputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
+      var out: ?[*:0]u8 = null;
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelOutputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Retrieves the names of user outputs in the eval model.
+    ///
+    /// This function returns the names of outputs of the eval model that can be associated with the OrtValue(s) returned
+    /// by the OrtTrainingApi::EvalStep function.
+    ///
+    /// index: Index of the output name requested.
+    /// allocator: Allocator to use to allocate the memory for the name.
+    pub fn getEvalModelOutputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
+      var out: ?[*:0]u8 = null;
+      try Error.check(api.underlying.TrainingSessionGetEvalModelOutputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    ///Reset the gradients of all trainable parameters to zero lazily.
+    ///
+    /// This function sets the internal state of the training session such that the gradients of the trainable
+    /// parameters in the OrtCheckpointState will be scheduled to be reset just before the new gradients are
+    /// computed on the next invocation of the next OrtTrainingApi::TrainStep.
+    ///
+    /// Reset the gradients of all trainable parameters to zero lazily.
+    pub fn lazyResetGrad(self: *@This()) !void {
+      try Error.check(api.underlying.LazyResetGrad.?(@ptrCast(self)));
+    }
+
+    ///Computes the outputs of the training model and the gradients of the trainable parameters for the given inputs
+    ///
+    /// This function performs a training step that computes the outputs of the training model and the gradients
+    /// of the trainable parameters for the given inputs. The train step is performed based on the training model
+    /// that was provided to the training session.
+    /// The OrtTrainingApi::TrainStep is equivalent of running forward propagation and backward propagation in a single step.
+    /// The gradients computed are stored inside the training session state so they can be later consumed
+    /// by the OrtTrainingApi::OptimizerStep function.
+    /// The gradients can be lazily reset by invoking the OrtTrainingApi::LazyResetGrad function.
+    ///
+    /// run_options: Run options for this training step.
+    /// inputs: The user inputs to the training model.
+    /// [out] outputs: User outputs computed by train step.
     pub fn trainStep(
       self: *@This(),
       run_options: ?*const RunOptions,
@@ -1089,6 +1285,14 @@ const Training = struct {
     }
 
     /// Computes the outputs for the eval model for the given inputs.
+    /// Computes the outputs for the eval model for the given inputs
+    ///
+    /// This function performs an eval step that computes the outputs of the eval model for the given inputs.
+    /// The eval step is performed based on the eval model that was provided to the training session.
+    ///
+    /// run_options: Run options for this eval step.
+    /// inputs: The user inputs to the eval model.
+    /// [out] outputs: User outputs computed by eval step.
     pub fn evalStep(
       self: *@This(),
       run_options: ?*const RunOptions,
@@ -1105,25 +1309,57 @@ const Training = struct {
       ));
     }
 
-    /// Performs the weight updates for the trainable parameters using the optimizer model.
-    pub fn optimizerStep(self: *@This(), run_options: ?*const RunOptions) !void {
-      try Error.check(api.underlying.OptimizerStep.?(
-        @ptrCast(self),
-        @ptrCast(run_options)
-      ));
-    }
-
     /// Sets the learning rate for this training session.
+    ///
+    /// This function allows users to set the learning rate for the training session. The current
+    /// learning rate is maintained by the training session and can be overwritten by invoking
+    /// this function with the desired learning rate. This function should not be used when a valid
+    /// learning rate scheduler is registered. It should be used either to set the learning rate
+    /// derived from a custom learning rate scheduler or to set a constant learning rate to be used
+    /// throughout the training session.
+    /// Note: This function does not set the initial learning rate that may be needed
+    /// by the predefined learning rate schedulers. To set the initial learning rate for learning
+    /// rate schedulers, please look at the function OrtTrainingApi::RegisterLinearLRScheduler.
+    ///
+    /// learning_rate: Desired learning rate to be set.
     pub fn setLearningRate(self: *@This(), learning_rate: f32) !void {
       try Error.check(api.underlying.SetLearningRate.?(@ptrCast(self), learning_rate));
     }
 
     /// Gets the current learning rate for this training session.
-    pub fn getLearningRate(self: *const @This()) f32 {
-      return api.underlying.GetLearningRate.?(@ptrCast(self));
+    ///
+    /// This function allows users to get the learning rate for the training session. The current
+    /// learning rate is maintained by the training session, and users can query it for the purpose
+    /// of implementing their own learning rate schedulers.
+    pub fn getLearningRate(self: *@This()) !f32 {
+      var out: f32 = undefined;
+      try Error.check(api.underlying.GetLearningRate.?(@ptrCast(self), &out));
+      return out;
+    }
+
+    /// Performs the weight updates for the trainable parameters using the optimizer model.
+    ///
+    /// This function performs the weight update step that updates the trainable parameters such that they
+    /// take a step in the direction of their gradients (gradient descent). The optimizer step is performed
+    /// based on the optimizer model that was provided to the training session.
+    /// The updated parameters are stored inside the training state so that they can be used by the next
+    /// OrtTrainingApi::TrainStep function call.
+    ///
+    /// run_options: Run options for this optimizer step.
+    pub fn optimizerStep(self: *@This(), run_options: ?*const RunOptions) !void {
+      try Error.check(api.underlying.OptimizerStep.?(@ptrCast(self), @ptrCast(run_options)));
     }
 
     /// Registers a linear learning rate scheduler for the training session.
+    ///
+    /// Register a linear learning rate scheduler that decays the learning rate by linearly updated
+    /// multiplicative factor from the initial learning rate set on the training session to 0. The decay
+    /// is performed after the initial warm up phase where the learning rate is linearly incremented
+    /// from 0 to the initial learning rate provided.
+    ///
+    /// warmup_step_count Warmup steps for LR warmup.
+    /// total_step_count Total step count.
+    /// initial_lr The initial learning rate to be used by the training session.
     pub fn registerLinearLRScheduler(self: *@This(), warmup_step_count: i64, total_step_count: i64, initial_lr: f32) !void {
       try Error.check(api.underlying.RegisterLinearLRScheduler.?(
         @ptrCast(self),
@@ -1134,23 +1370,128 @@ const Training = struct {
     }
 
     /// Update the learning rate based on the registered learning rate scheduler.
+    ///
+    /// Takes a scheduler step that updates the learning rate that is being used by the training session.
+    /// This function should typically be called before invoking the optimizer step for each round,
+    /// or as determined necessary to update the learning rate being used by the training session.
+    /// Note: Please note that a valid predefined learning rate scheduler must be first registered to invoke this function.
     pub fn schedulerStep(self: *@This()) !void {
       try Error.check(api.underlying.SchedulerStep.?(@ptrCast(self)));
     }
 
-    /// Reset the gradients of all trainable parameters to zero lazily.
-    pub fn resetGrad(self: *@This()) !void {
-      try Error.check(api.underlying.ResetGrad.?(@ptrCast(self)));
+    /// Retrieves the size of all the parameters.
+    ///
+    /// Calculates the total number of primitive (datatype of the parameters) elements of all the parameters in the training state.
+    /// When trainable_only argument is true, the size is calculated for trainable params only.
+    ///
+    /// trainable_only: Whether to skip non-trainable parameters
+    pub fn getParametersSize(self: *@This(), trainable_only: bool) !usize {
+      var out: usize = undefined;
+      try Error.check(api.underlying.GetParametersSize.?(@ptrCast(self), &out, trainable_only));
+      return out;
+    }
+
+
+    /// Copy all parameters to a contiguous buffer held by the argument parameters_buffer
+    ///
+    /// The parameters_buffer has to be of the size given by GetParametersSize api call,
+    /// with matching setting for the argument trainable_only. All the target parameters must be of the same
+    /// datatype. The OrtValue must be pre-allocated onto
+    /// the desired device. This is a complementary function to OrtTrainingApi::CopyBufferToParameters.
+    /// Parameter ordering is preserved.
+    /// User is responsible for allocating and freeing the resources used by the parameters_buffer.
+    ///
+    /// \param[in] sess The `this` pointer to the training session.
+    /// \param[in] trainable_only Whether to skip non-trainable parameters
+    /// \param[out] parameters_buffer The pre-allocated OrtValue buffer to copy onto.
+    pub fn copyParametersToBuffer(self: *@This(), trainable_only: bool) !*Value {
+      var out: ?*Value = undefined;
+      try Error.check(api.underlying.CopyParametersToBuffer.?(@ptrCast(self), @ptrCast(&out), trainable_only));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Copy parameter values from the given contiguous buffer held by parameters_buffer to the training state
+    ///
+    /// The parameters_buffer argument has to be of the size given by OrtTrainingApi::GetParametersSize api call,
+    /// with matching setting for trainable_only argument. All the target parameters must be of the same
+    /// datatype. This is a complementary function to OrtTrainingApi::CopyParametersToBuffer
+    /// and can be used to load updated buffer values onto the training state.
+    /// Parameter ordering is preserved.
+    /// User is responsible for allocating and freeing the resources used by the parameters_buffer.
+    /// In case the training session was created with a nominal checkpoint, invoking this function is required
+    /// to load the updated parameters onto the checkpoint to complete it.
+    ///
+    /// \param[in] sess The `this` pointer to the training session.
+    /// \param[in] trainable_only Whether to skip non-trainable parameters
+    pub fn copyBufferToParameters(self: *@This(), trainable_only: bool) !*Value {
+      var out: ?*Value = undefined;
+      try Error.check(api.underlying.CopyBufferToParameters.?(@ptrCast(self), @ptrCast(&out), trainable_only));
+      return out orelse error.OutOfMemory;
     }
 
     /// Export a model that can be used for inferencing.
-    pub fn exportModelForInferencing(self: *@This(), path: [*:0]const u8, graph_output_names: []const [*:0]const u8) !void {
+    ///
+    /// If the training session was provided with an eval model, the training session can generate
+    /// an inference model if it knows the inference graph outputs. The input inference graph outputs
+    /// are used to prune the eval model so that the inference model's outputs align with the provided outputs.
+    /// The exported model is saved at the path provided and can be used for inferencing with InferenceSession.
+    /// Note: the function re-loads the eval model from the path provided to OrtTrainingApi::CreateTrainingSession and expects that this path still be valid.
+    ///
+    /// inference_model_path: Path where the inference model should be serialized to.
+    /// graph_output_names Names of the outputs that are needed in the inference model.
+    pub fn exportModelForInferencing(self: *@This(), path: Utils.Path, graph_output_names: []const [*:0]const u8) !void {
       try Error.check(api.underlying.ExportModelForInferencing.?(
         @ptrCast(self),
         path,
         graph_output_names.len,
         @ptrCast(graph_output_names.ptr)
       ));
+    }
+
+    /// Retrieves the number of user inputs in the training model.
+    ///
+    /// This function returns the number of inputs of the training model so that the user can accordingly
+    /// allocate the OrtValue(s) provided to the OrtTrainingApi::TrainStep function.
+    pub fn getTrainingModelInputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelInputCount.?(@ptrCast(self), &out));
+      return out;
+    }
+
+    /// Retrieves the number of user inputs in the eval model.
+    ///
+    /// This function returns the number of inputs of the eval model so that the user can accordingly
+    /// allocate the OrtValue(s) provided to the OrtTrainingApi::EvalStep function.
+    pub fn getEvalModelInputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(api.underlying.TrainingSessionGetEvalModelInputCount.?(@ptrCast(self), &out));
+      return out;
+    }
+
+    /// Retrieves the name of the user input at given index in the training model.
+    ///
+    /// This function returns the names of inputs of the training model that can be associated with the
+    /// OrtValue(s) provided to the OrtTrainingApi::TrainStep function.
+    ///
+    /// index: The index of the training model input name requested.
+    /// allocator: The allocator to use to allocate the memory for the requested name.
+    pub fn getTrainingModelInputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
+      var out: ?[*:0]u8 = null;
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelInputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Retrieves the name of the user input at given index in the eval model.
+    ///
+    /// This function returns the names of inputs of the eval model that can be associated with the OrtValue(s) provided
+    /// to the OrtTrainingApi::EvalStep function.
+    ///
+    /// index: The index of the eval model input name requested.
+    /// allocator: The allocator to use to allocate the memory for the requested name.
+    pub fn getEvalModelInputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
+      var out: ?[*:0]u8 = null;
+      try Error.check(api.underlying.TrainingSessionGetEvalModelInputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      return out orelse error.OutOfMemory;
     }
 
     pub fn deinit(self: *@This()) void {
@@ -2413,7 +2754,7 @@ pub const ThreadingOptions = struct {
       const T = @TypeOf(instance);
       const Sub = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
       return .{
-        .ptr = if (@bitSizeOf(Sub) == 0) undefined else @ptrCast(instance),
+        .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
         .create_fn = &struct {
           pub fn create(ctx: ?*anyopaque, worker: ?*const fn(?*anyopaque) void, arg: ?*anyopaque) Api.c.OrtCustomThreadHandle {
             const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(ctx.?);
@@ -2454,7 +2795,7 @@ pub const ThreadingOptions = struct {
 
     pub fn customThreadCreationInterface(self: *@This(), interface: ThreadCreationInterface) !void {
       try Error.check(Api.ort.SetGlobalCustomCreateThreadFn.?(@ptrCast(self), interface.create_fn));
-      try Error.check(Api.ort.SetGlobalCustomThreadCreationOptions.?(@ptrCast(self), interface.ptr));
+      if (interface.ptr) |p| try Error.check(Api.ort.SetGlobalCustomThreadCreationOptions.?(@ptrCast(self), p));
     }
 
     pub fn customThreadJoinFunction(self: *@This(), f: *const fn(*const Api.c.OrtCustomHandleType) callconv(.c) void) !void {
@@ -5310,153 +5651,190 @@ pub const Op = opaque {
       Variadic = @bitCast(Api.c.INPUT_OUTPUT_VARIADIC),
     };
 
-    /// Initialize a CustomOp structure with vtables pointing to the provided OpType and KernelType.
+    /// Initialize a CustomOp structure with vtables pointing to the provided Implementer type.
     ///
-    /// Requirements for OpType:
-    /// - Must have a field `ort_op: Op.Custom` (used for @fieldParentPtr)
-    /// - fn getName(self: *const OpType) [*:0]const u8
-    /// - fn getExecutionProviderType(self: *const OpType) ?[*:0]const u8
-    /// - fn getInputType(self: *const OpType, index: usize) Value.Sub.Tensor.ElementDataType
-    /// - fn getInputTypeCount(self: *const OpType) usize
-    /// - fn getOutputType(self: *const OpType, index: usize) Value.Sub.Tensor.ElementDataType
-    /// - fn getOutputTypeCount(self: *const OpType) usize
-    /// - fn createKernel(self: *const OpType, api: *const Api.c.OrtApi, info: *const KernelInfo) !*KernelType
-    /// - (Optional) fn getInputCharacteristic(self: *const OpType, index: usize) InputOutputCharacteristic
-    /// - (Optional) fn getOutputCharacteristic(self: *const OpType, index: usize) InputOutputCharacteristic
-    /// - (Optional) fn getInputMemoryType(self: *const OpType, index: usize) Allocator.MemoryType
+    /// Requirements for Implementer (T):
+    /// - Must have a field `ort_op: CustomOp` for @fieldParentPtr navigation.
     ///
-    /// Requirements for KernelType:
-    /// - fn compute(self: *KernelType, context: *KernelContext) !void
+    /// REQUIRED (Instance Methods) - C passes the 'op' handle; T uses @fieldParentPtr.
+    /// - fn getName(self: *const T) [*:0]const u8
+    /// - fn getExecutionProviderType(self: *const T) ?[*:0]const u8
+    /// - fn getInputType(self: *const T, index: usize) Value.Tensor.ElementDataType
+    /// - fn getInputTypeCount(self: *const T) usize
+    /// - fn getOutputType(self: *const T, index: usize) Value.Tensor.ElementDataType
+    /// - fn getOutputTypeCount(self: *const T) usize
+    /// - fn createKernelV2(self: *const T, api: *const Api.ort, info: *const KernelInfo) !*anyopaque
     ///
-    pub fn init(comptime OpType: type, comptime KernelType: type) @This() {
+    /// REQUIRED (Static Methods) - C does NOT pass the 'op' handle; T must implement as static.
+    /// - fn computeV2(kernel_state: *anyopaque, context: *KernelContext) !void
+    /// - fn destroyKernel(kernel_state: *anyopaque) void
+    ///
+    /// OPTIONAL (Instance Methods) - Configuration and Schema.
+    /// - fn getInputCharacteristic(self: *const T, index: usize) InputOutputCharacteristic
+    /// - fn getOutputCharacteristic(self: *const T, index: usize) InputOutputCharacteristic
+    /// - fn getInputMemoryType(self: *const T, index: usize) Allocator.MemoryType
+    /// - fn getVariadicInputMinArity(self: *const T) i32
+    /// - fn getVariadicInputHomogeneity(self: *const T) bool
+    /// - fn getVariadicOutputMinArity(self: *const T) i32
+    /// - fn getVariadicOutputHomogeneity(self: *const T) bool
+    /// - fn inferOutputShape(self: *const T, context: *ShapeInferContext) !void
+    /// - fn getStartVersion(self: *const T) i32
+    /// - fn getEndVersion(self: *const T) i32
+    /// - fn createKernelV1(self: *const T, api: *const Api.ort, info: *const KernelInfo) !*anyopaque
+    ///
+    /// OPTIONAL (Static Methods) - Performance Optimizations and Legacy Compute.
+    /// - fn getMayInplace(input_idx: *[*]i32, output_idx: *[*]i32) usize
+    /// - fn releaseMayInplace(input_idx: [*]i32, output_idx: [*]i32) void
+    /// - fn getAliasMap(input_idx: *[*]i32, output_idx: *[*]i32) usize
+    /// - fn releaseAliasMap(input_idx: [*]i32, output_idx: [*]i32) void
+    /// - fn computeV1(kernel_state: *anyopaque, context: *KernelContext) void
+    pub fn init(comptime T: type) @This() {
       const VTable = struct {
-        fn getName(op: ?*const Api.c.OrtCustomOp) callconv(.c) [*:0]const u8 {
-          const self: *Op.Custom = @ptrCast(op.?);
-          return self.getName();
+        fn getSelf(ptr: ?*const Api.c.OrtCustomOp) *const T {
+          return @fieldParentPtr("ort_op", @as(*const Custom, @ptrCast(ptr.?)));
         }
 
-        fn getExecutionProviderType(op: ?*const Api.c.OrtCustomOp) callconv(.c) ?[*:0]const u8 {
-          const self: *Op.Custom = @ptrCast(op.?);
-          return self.getExecutionProviderType();
+        fn createKernelV1(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo) callconv(.c) ?*anyopaque {
+          return getSelf(op).createKernelV1(api.?, @ptrCast(info.?)) catch null;
+        }
+
+        fn getName(op: ?*const Api.c.OrtCustomOp) callconv(.c) [*:0]const u8 {
+          return getSelf(op).getName();
+        }
+
+        fn getEPType(op: ?*const Api.c.OrtCustomOp) callconv(.c) ?[*:0]const u8 {
+          return getSelf(op).getExecutionProviderType();
         }
 
         fn getInputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
-          const self: *Op.Custom = @ptrCast(op.?);
-          return @intFromEnum(self.getInputType(index));
+          return @intFromEnum(getSelf(op).getInputType(index));
         }
 
         fn getInputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
-          const self: *Op.Custom = @ptrCast(op.?);
-          return self.getInputTypeCount();
+          return getSelf(op).getInputTypeCount();
         }
 
         fn getOutputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
-          const self: *Op.Custom = @ptrCast(op.?);
-          return @intFromEnum(self.getOutputType(index));
+          return @intFromEnum(getSelf(op).getOutputType(index));
         }
 
         fn getOutputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
-          const self: *Op.Custom = @ptrCast(op.?);
-          return self.getOutputTypeCount();
+          return getSelf(op).getOutputTypeCount();
         }
 
-        fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel: ?*?*anyopaque) callconv(.c) ?*Error.Status {
-          const self: *Op.Custom = @ptrCast(op.?);
-          // We forward the raw C pointers to the user implementation which should expect opaque wrappers
-          // but we cast them here for convenience in the Zig wrapper logic if needed.
-          const k_info: *const KernelInfo = @ptrCast(info.?);
-          
-          const result = self.createKernel(api.?, k_info) catch |err| {
-            // Convert Zig error to OrtStatus
-            // Note: Simplified error mapping. Ideally mapping specific errors to ORT codes.
-            const msg = @errorName(err);
-            return Error.Status.init(Api.c.ORT_FAIL, msg);
+        fn getInputChar(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
+          return @intFromEnum(getSelf(op).getInputCharacteristic(index));
+        }
+
+        fn getOutputChar(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
+          return @intFromEnum(getSelf(op).getOutputCharacteristic(index));
+        }
+
+        fn getInputMemType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtMemType {
+          return @intFromEnum(getSelf(op).getInputMemoryType(index));
+        }
+
+        fn getVarInMin(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+          return getSelf(op).getVariadicInputMinArity();
+        }
+
+        fn getVarInHomog(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+          return @intFromBool(getSelf(op).getVariadicInputHomogeneity());
+        }
+
+        fn getVarOutMin(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+          return getSelf(op).getVariadicOutputMinArity();
+        }
+
+        fn getVarOutHomog(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+          return @intFromBool(getSelf(op).getVariadicOutputHomogeneity());
+        }
+
+        fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel_out: ?*?*anyopaque) callconv(.c) ?*Api.c.OrtStatus {
+          const res = getSelf(op).createKernelV2(api.?, @ptrCast(info.?)) catch |err| {
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           };
-          
-          kernel.?.* = result;
-          return null; // OK
+          kernel_out.?.* = res;
+          return null;
         }
 
-        fn kernelComputeV2(kernel: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Error.Status {
-          const self: *KernelType = @ptrCast(@alignCast(kernel.?));
-          const k_ctx: *KernelContext = @ptrCast(context.?);
-          
-          self.compute(k_ctx) catch |err| {
-            return Error.Status.init(Api.c.ORT_FAIL, @errorName(err));
+        fn inferShape(op: ?*const Api.c.OrtCustomOp, ctx: ?*Api.c.OrtShapeInferContext) callconv(.c) ?*Api.c.OrtStatus {
+          getSelf(op).inferOutputShape(@ptrCast(ctx.?)) catch |err| {
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           };
           return null;
         }
 
-        fn kernelDestroy(kernel: ?*anyopaque) callconv(.c) void {
-          const self: *KernelType = @ptrCast(@alignCast(kernel.?));
-          // We assume the user allocated the kernel using an allocator.
-          // Since `createKernel` returns a pointer, we need to know how it was allocated to free it.
-          // For this generic wrapper, we assume `std.heap.c_allocator` was used or the user must manage memory manually
-          // if they construct this differently. 
-          // A common pattern is to use the allocator passed in init, but here we simply destroy.
-          // If the user allocated with a different allocator, they might leak or crash if we enforce c_allocator.
-          // Ideally, the User struct handles destruction via `deinit` or similar, but the C API 
-          // provides this callback.
-          // 
-          // *Assumption*: The user allocates `KernelType` using `std.heap.c_allocator.create(KernelType)`.
-          std.heap.c_allocator.destroy(self);
+        fn getStartVer(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+          return getSelf(op).getStartVersion();
         }
 
-        // Optional handlers (default implementations provided if missing in OpType)
-
-        fn getInputCharacteristic(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
-          const self: *Op.Custom = @ptrCast(op.?);
-          if (@hasDecl(OpType, "getInputCharacteristic")) {
-            return @intFromEnum(self.getInputCharacteristic(index));
-          }
-          return Api.c.INPUT_OUTPUT_REQUIRED;
+        fn getEndVer(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+          return getSelf(op).getEndVersion();
         }
 
-        fn getOutputCharacteristic(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
-          const self: *Op.Custom = @ptrCast(op.?);
-          if (@hasDecl(OpType, "getOutputCharacteristic")) {
-            return @intFromEnum(self.getOutputCharacteristic(index));
-          }
-          return Api.c.INPUT_OUTPUT_REQUIRED;
+        // Static Methods below this comment (C does NOT pass 'op' pointer)
+
+        fn kernelComputeV1(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) void {
+          T.computeV1(kernel_state, @ptrCast(context.?));
         }
 
-        fn getInputMemoryType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtMemType {
-          const self: *Op.Custom = @ptrCast(op.?);
-          if (@hasDecl(OpType, "getInputMemoryType")) {
-            return @intFromEnum(self.getInputMemoryType(index));
-          }
-          return Api.c.OrtMemTypeDefault;
+        fn kernelDestroy(kernel_state: ?*anyopaque) callconv(.c) void {
+          T.destroyKernel(kernel_state);
+        }
+
+        fn kernelComputeV2(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Api.c.OrtStatus {
+          T.computeV2(kernel_state, @ptrCast(context.?)) catch |err| {
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          };
+          return null;
+        }
+
+        fn getInplace(in_idx: ?*?*c_int, out_idx: ?*?*c_int) callconv(.c) usize {
+          return T.getMayInplace(@ptrCast(in_idx.?), @ptrCast(out_idx.?));
+        }
+
+        fn releaseInplace(in_idx: ?*c_int, out_idx: ?*c_int) callconv(.c) void {
+          T.releaseMayInplace(@ptrCast(in_idx), @ptrCast(out_idx));
+        }
+
+        fn getAlias(in_idx: ?*?*c_int, out_idx: ?*?*c_int) callconv(.c) usize {
+          return T.getAliasMap(@ptrCast(in_idx.?), @ptrCast(out_idx.?));
+        }
+
+        fn releaseAlias(in_idx: ?*c_int, out_idx: ?*c_int) callconv(.c) void {
+          T.releaseAliasMap(@ptrCast(in_idx), @ptrCast(out_idx));
         }
       };
 
       return .{
         .underlying = .{
           .version = Api.c.ORT_API_VERSION,
-          .CreateKernel = null, // Using V2
+          .CreateKernel = if (@hasDecl(T, "createKernelV1")) VTable.createKernelV1 else null,
           .GetName = VTable.getName,
-          .GetExecutionProviderType = VTable.getExecutionProviderType,
+          .GetExecutionProviderType = VTable.getEPType,
           .GetInputType = VTable.getInputType,
           .GetInputTypeCount = VTable.getInputTypeCount,
           .GetOutputType = VTable.getOutputType,
           .GetOutputTypeCount = VTable.getOutputTypeCount,
-          .KernelCompute = null, // Using V2
-          .KernelDestroy = VTable.kernelDestroy,
-          .GetInputCharacteristic = VTable.getInputCharacteristic,
-          .GetOutputCharacteristic = VTable.getOutputCharacteristic,
-          .GetInputMemoryType = VTable.getInputMemoryType,
-          .GetVariadicInputMinArity = null,
-          .GetVariadicInputHomogeneity = null,
-          .GetVariadicOutputMinArity = null,
-          .GetVariadicOutputHomogeneity = null,
-          .CreateKernelV2 = VTable.createKernelV2,
-          .KernelComputeV2 = VTable.kernelComputeV2,
-          .InferOutputShapeFn = null,
-          .GetStartVersion = null,
-          .GetEndVersion = null,
-          .GetMayInplace = null,
-          .ReleaseMayInplace = null,
-          .GetAliasMap = null,
-          .ReleaseAliasMap = null,
+          .KernelCompute = if (@hasDecl(T, "computeV1")) VTable.kernelComputeV1 else null,
+          .KernelDestroy = if (@hasDecl(T, "destroyKernel")) VTable.kernelDestroy else null,
+          .GetInputCharacteristic = if (@hasDecl(T, "getInputCharacteristic")) VTable.getInputChar else null,
+          .GetOutputCharacteristic = if (@hasDecl(T, "getOutputCharacteristic")) VTable.getOutputChar else null,
+          .GetInputMemoryType = if (@hasDecl(T, "getInputMemoryType")) VTable.getInputMemType else null,
+          .GetVariadicInputMinArity = if (@hasDecl(T, "getVariadicInputMinArity")) VTable.getVarInMin else null,
+          .GetVariadicInputHomogeneity = if (@hasDecl(T, "getVariadicInputHomogeneity")) VTable.getVarInHomog else null,
+          .GetVariadicOutputMinArity = if (@hasDecl(T, "getVariadicOutputMinArity")) VTable.getVarOutMin else null,
+          .GetVariadicOutputHomogeneity = if (@hasDecl(T, "getVariadicOutputHomogeneity")) VTable.getVarOutHomog else null,
+          .CreateKernelV2 = if (@hasDecl(T, "createKernelV2")) VTable.createKernelV2 else null,
+          .KernelComputeV2 = if (@hasDecl(T, "computeV2")) VTable.kernelComputeV2 else null,
+          .InferOutputShapeFn = if (@hasDecl(T, "inferOutputShape")) VTable.inferShape else null,
+          .GetStartVersion = if (@hasDecl(T, "getStartVersion")) VTable.getStartVer else null,
+          .GetEndVersion = if (@hasDecl(T, "getEndVersion")) VTable.getEndVer else null,
+          .GetMayInplace = if (@hasDecl(T, "getMayInplace")) VTable.getInplace else null,
+          .ReleaseMayInplace = if (@hasDecl(T, "releaseMayInplace")) VTable.releaseInplace else null,
+          .GetAliasMap = if (@hasDecl(T, "getAliasMap")) VTable.getAlias else null,
+          .ReleaseAliasMap = if (@hasDecl(T, "releaseAliasMap")) VTable.releaseAlias else null,
         },
       };
     }
@@ -5776,6 +6154,10 @@ const ProviderOptions = struct {
     }
   };
 };
+
+//-----
+//Tests
+//-----
 
 /// If we use std.testing.refAllDeclsRecursive, we get a compile error because c has untranslatable code, hence we use this
 /// Even this touches the translated parts of the c code that we touch, but atleast not it doesn't crash
