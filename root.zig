@@ -1156,9 +1156,7 @@ const Training = struct {
 
 pub const Api = struct {
   /// API docs: https://onnxruntime.ai/docs/api/c/struct_Api.ort.html
-  const c = @cImport({
-    @cInclude("onnxruntime/onnxruntime_training_c_api.h");
-  });
+  pub const c = @cImport({ @cInclude("onnxruntime/onnxruntime_training_c_api.h"); });
 
   pub var base: *const Api.c.OrtApiBase = undefined;
   /// a pointer to a static api struct
@@ -5751,7 +5749,23 @@ const ProviderOptions = struct {
   };
 };
 
-comptime {
-  std.testing.refAllDeclsRecursive(@This());
+/// If we use std.testing.refAllDeclsRecursive, we get a compile error because c has untranslatable code, hence we use this
+/// Even this touches the translated parts of the c code that we touch, but atleast not it doesn't crash
+pub fn refAllDeclsRecursiveExcerptC(comptime T: type) void {
+  if (!@import("builtin").is_test) return;
+  inline for (comptime std.meta.declarations(T)) |decl| {
+    _ = &@field(T, decl.name);
+    if (@TypeOf(@field(T, decl.name)) == type) {
+      if (decl.name.len == 1 and decl.name[0] == 'c') continue;
+      switch (@typeInfo(@field(T, decl.name))) {
+        .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursiveExcerptC(@field(T, decl.name)),
+        else => {},
+      }
+    }
+  }
+}
+
+test {
+  refAllDeclsRecursiveExcerptC(@This());
 }
 
