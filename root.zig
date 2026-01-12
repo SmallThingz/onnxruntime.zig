@@ -1,7 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// General Utils N stuff
 pub const Utils = struct {
+  pub const PathChar = if (builtin.os.tag == .windows) u16 else u8;
+  comptime { std.debug.assert(PathChar == Api.c.ORTCHAR_T); }
+  pub const Path = [*:0]const PathChar;
+
   const VEnum = enum {usize, cstr};
   fn OptionsKVLRetvalType(I: type, vEnum: VEnum) type {
     return struct {
@@ -86,8 +91,12 @@ pub const Utils = struct {
 
 /// This is usually used by vendors
 pub const Ep = struct {
+  pub const api = opaque {
+    pub var underlying: *const Api.c.OrtEpApi = undefined;
+  };
+
   /// The Wrapper for OrtEp Struct
-  pub const Ort = struct {
+  pub const Interface = struct {
     underlying: Api.c.OrtEp,
     comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
 
@@ -131,7 +140,7 @@ pub const Ep = struct {
     /// - fn onRunEnd(self: *T, options: *const RunOptions, sync_stream: bool) !void
     /// - fn createAllocator(self: *T, info: *const Allocator.MemoryInfo) !?*Allocator
     /// - fn createSyncStreamForDevice(self: *T, device: *const Allocator.MemoryDevice) !?*SyncStreamImpl
-    pub fn createEpInterface(comptime T: type) @This() {
+    pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(ptr: ?*const Api.c.OrtEp) *T {
           return @fieldParentPtr("ep", @as(*Ep, @constCast(@ptrCast(ptr.?))));
@@ -244,10 +253,6 @@ pub const Ep = struct {
         },
       };
     }
-  };
-
-  pub const api = opaque {
-    pub var underlying: *const Api.c.OrtEpApi = undefined;
   };
 
   /// Struct that an EP implements for IDataTransfer to copy between devices it uses and CPU
@@ -3446,8 +3451,8 @@ pub const Graph = opaque {
 
   /// Get the filepath to the model from which this OrtGraph was constructed.
   /// Returns empty string if unknown (e.g. created from memory).
-  pub fn getModelPath(self: *const @This()) ![*:0]const Api.c.ORTCHAR_T {
-    var out: ?[*:0]const Api.c.ORTCHAR_T = null;
+  pub fn getModelPath(self: *const @This()) !Utils.Path {
+    var out: ?Utils.Path = null;
     try Error.check(Api.ort.Graph_GetModelPath.?(@ptrCast(self), @ptrCast(&out)));
     return out orelse @ptrCast(""); // Assuming empty string literal is compatible or mapped
   }
@@ -3793,7 +3798,7 @@ pub const Model = opaque {
     }
 
     /// Sets the file path to the input ONNX model to compile.
-    pub fn setInputModelPath(self: *@This(), path: [*:0]const Api.c.ORTCHAR_T) !void {
+    pub fn setInputModelPath(self: *@This(), path: Utils.Path) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetInputModelPath.?(
         @ptrCast(self),
         path
@@ -3810,7 +3815,7 @@ pub const Model = opaque {
     }
 
     /// Sets the file path for the output ONNX model.
-    pub fn setOutputModelPath(self: *@This(), path: [*:0]const Api.c.ORTCHAR_T) !void {
+    pub fn setOutputModelPath(self: *@This(), path: Utils.Path) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelPath.?(
         @ptrCast(self),
         path
@@ -3869,7 +3874,7 @@ pub const Model = opaque {
 
     /// Sets information related to EP context binary file.
     /// Wraps OrtCompileApi::ModelCompilationOptions_SetEpContextBinaryInformation
-    pub fn setEpContextBinaryInformation(self: *@This(), output_dir: [*:0]const Api.c.ORTCHAR_T, model_name: [*:0]const Api.c.ORTCHAR_T) !void {
+    pub fn setEpContextBinaryInformation(self: *@This(), output_dir: Utils.Path, model_name: Utils.Path) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetEpContextBinaryInformation.?(
           @ptrCast(self),
           output_dir,
@@ -3879,7 +3884,7 @@ pub const Model = opaque {
 
     /// Optionally sets the file that should store external initializers for the compiled model.
     /// Wraps OrtCompileApi::ModelCompilationOptions_SetOutputModelExternalInitializersFile
-    pub fn setOutputModelExternalInitializersFile(self: *@This(), path: [*:0]const Api.c.ORTCHAR_T, threshold: usize) !void {
+    pub fn setOutputModelExternalInitializersFile(self: *@This(), path: Utils.Path, threshold: usize) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelExternalInitializersFile.?(
           @ptrCast(self),
           path,
@@ -4313,7 +4318,7 @@ pub const Session = struct {
         try Error.check(Api.ort.SetInterOpNumThreads.?(@ptrCast(self), threads));
       }
 
-      pub fn addCustomOpDomain(self: *@This(), domain: *CustomOp.Domain) !void {
+      pub fn addCustomOpDomain(self: *@This(), domain: *Op.Custom.Domain) !void {
         try Error.check(Api.ort.AddCustomOpDomain.?(@ptrCast(self), @ptrCast(domain)));
       }
 
@@ -4329,12 +4334,12 @@ pub const Session = struct {
       }
 
       /// Wraps OrtApi::SessionOptionsAppendExecutionProvider_CUDA_V2
-      pub fn appendExecutionProviderCUDA(self: *@This(), options: *const ProviderOptions.CUDAV2) !void {
+      pub fn appendExecutionProviderCUDA(self: *@This(), options: *const ProviderOptions.CUDA) !void {
         try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CUDA_V2.?(@ptrCast(self), @ptrCast(options)));
       }
 
       /// Wraps OrtApi::SessionOptionsAppendExecutionProvider_TensorRT_V2
-      pub fn appendExecutionProviderTensorRT(self: *@This(), options: *const ProviderOptions.TensorRTV2) !void {
+      pub fn appendExecutionProviderTensorRT(self: *@This(), options: *const ProviderOptions.TensorRT) !void {
         try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_TensorRT_V2.?(@ptrCast(self), @ptrCast(options)));
       }
 
@@ -4352,7 +4357,7 @@ pub const Session = struct {
       /// The handle to the loaded library is automatically released by ORT when the last OrtSession that references the
       /// library handle is released. If no OrtSession is created, then the library handle is released when the provided
       /// OrtSessionOptions is released.
-      pub fn registerCustomOpsLibrary(self: *@This(), path: [*:0]const Api.c.ORTCHAR_T) !void {
+      pub fn registerCustomOpsLibrary(self: *@This(), path: Utils.Path) !void {
         try Error.check(Api.ort.RegisterCustomOpsLibrary_V2.?(@ptrCast(self), path));
       }
 
@@ -4365,7 +4370,7 @@ pub const Session = struct {
       /// It then passes in the provided session options to this function along with the api base.
       /// The handle to the loaded library is returned in library_handle. It can be freed by the caller after all sessions using the passed in
       /// session options are destroyed, or if an error occurs and it is non null.
-      pub fn registerCustomOpsLibrary_DeprecatedV1(self: *@This(), path: [*:0]const Api.c.ORTCHAR_T) !*anyopaque {
+      pub fn registerCustomOpsLibrary_DeprecatedV1(self: *@This(), path: Utils.Path) !*anyopaque {
         var retval: *anyopaque = undefined;
         try Error.check(Api.ort.RegisterCustomOpsLibrary.?(@ptrCast(self), path, @ptrCast(&retval)));
         return retval;
@@ -4378,7 +4383,7 @@ pub const Session = struct {
       /// buffers: Slice of file contents.
       pub fn addExternalInitializersFromFilesInMemory(
         self: *@This(),
-        names: []const [*:0]const Api.c.ORTCHAR_T,
+        names: []const Utils.Path,
         buffers: []const [*]const u8,
         lengths: []const [*]u8,
       ) !void {
@@ -4520,7 +4525,7 @@ pub const Session = struct {
     };
   };
 
-  pub fn initZ(path: [*:0]const Api.c.ORTCHAR_T, options: *const Options.C) !*@This() {
+  pub fn initZ(path: Utils.Path, options: *const Options.C) !*@This() {
     var self: ?*@This() = null;
     try Error.check(Api.ort.CreateSession.?(
       Api.env.underlying,
@@ -4544,7 +4549,7 @@ pub const Session = struct {
   }
 
   pub fn initWithPrepackedWeights(
-    model_path: [*:0]const Api.c.ORTCHAR_T,
+    model_path: Utils.Path,
     options: *const Options.C,
     container: *PrepackedWeightsContainer
   ) !*@This() {
@@ -4801,6 +4806,35 @@ pub const RunOptions = opaque {
   pub fn unsetTerminate(self: *@This()) !void {
     try Error.check(Api.ort.RunOptionsUnsetTerminate.?(@ptrCast(self)));
   }
+
+  /// Wrapper around ::OrtLoraAdapter
+  /// Holds a set of LoRA Parameters loaded from a single file.
+  ///
+  /// LoRA (Low-Rank Adaptation) allow you to modify the behavior of a base model without retraining it.
+  /// This allows you to hot-swap fine-tuned weights during inference
+  pub const LoraAdapter = opaque {
+    /// Wraps OrtApi::CreateLoraAdapter
+    /// adapter_path: Path to the LoRA adapter file.
+    /// allocator: Optional allocator. If null, data stays on CPU until inference requires it on device.
+    pub fn init(adapter_path: Utils.Path, allocator: *Allocator) !*@This() {
+      var self: ?*@This() = null;
+      try Error.check(Api.ort.CreateLoraAdapter.?(adapter_path, @ptrCast(allocator), @ptrCast(&self)));
+      return self orelse error.OutOfMemory;
+    }
+
+    /// Wraps OrtApi::CreateLoraAdapterFromArray
+    /// bytes: In-memory buffer of the LoRA adapter.
+    pub fn initFromArray(bytes: []const u8, allocator: *Allocator) !*@This() {
+      var self: ?*@This() = null;
+      try Error.check(Api.ort.CreateLoraAdapterFromArray.?(bytes.ptr, bytes.len, @ptrCast(allocator), @ptrCast(&self)));
+      return self orelse error.OutOfMemory;
+    }
+
+    /// Release the LoraAdapter.
+    pub fn deinit(self: *@This()) void {
+      Api.ort.ReleaseLoraAdapter.?(@ptrCast(self));
+    }
+  };
 
   pub fn addActiveLoraAdapter(self: *@This(), adapter: *const LoraAdapter) !void {
     try Error.check(Api.ort.RunOptionsAddActiveLoraAdapter.?(@ptrCast(self), @ptrCast(adapter)));
@@ -5124,7 +5158,7 @@ pub const KernelInfo = opaque {
       self: *const @This(), 
       severity: Logging.Level, 
       message: [*:0]const u8, 
-      file: [*:0]const Api.c.ORTCHAR_T, 
+      file: Utils.Path, 
       line: c_int, 
       func: [*:0]const u8
     ) !void {
@@ -5265,191 +5299,191 @@ pub const Op = opaque {
   pub fn deinit(self: *@This()) void {
     Api.ort.ReleaseOp.?(@ptrCast(self));
   }
-};
 
-pub const CustomOp = struct {
-  underlying: Api.c.OrtCustomOp,
-  comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+  pub const Custom = struct {
+    underlying: Api.c.OrtCustomOp,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
 
-  pub const InputOutputCharacteristic = enum(c_uint) {
-    Required = @bitCast(Api.c.INPUT_OUTPUT_REQUIRED),
-    Optional = @bitCast(Api.c.INPUT_OUTPUT_OPTIONAL),
-    Variadic = @bitCast(Api.c.INPUT_OUTPUT_VARIADIC),
-  };
-
-  pub const Domain = opaque {
-    /// Create a custom op domain.
-    pub fn init(domain: [*:0]const u8) !*@This() {
-      var out: ?*@This() = null;
-      try Error.check(Api.ort.CreateCustomOpDomain.?(domain, @ptrCast(&out)));
-      return out orelse error.OutOfMemory;
-    }
-
-    /// Add a custom op to the domain.
-    /// The CustomOp struct must remain valid until the domain is released.
-    pub fn add(self: *@This(), op: *CustomOp) !void {
-      try Error.check(Api.ort.CustomOpDomain_Add.?(
-        @ptrCast(self),
-        @ptrCast(&op.underlying),
-      ));
-    }
-
-    /// Release the domain.
-    pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseCustomOpDomain.?(@ptrCast(self));
-    }
-  };
-
-  /// Initialize a CustomOp structure with vtables pointing to the provided OpType and KernelType.
-  ///
-  /// Requirements for OpType:
-  /// - Must have a field `ort_op: CustomOp` (used for @fieldParentPtr)
-  /// - fn getName(self: *const OpType) [*:0]const u8
-  /// - fn getExecutionProviderType(self: *const OpType) ?[*:0]const u8
-  /// - fn getInputType(self: *const OpType, index: usize) Value.Sub.Tensor.ElementDataType
-  /// - fn getInputTypeCount(self: *const OpType) usize
-  /// - fn getOutputType(self: *const OpType, index: usize) Value.Sub.Tensor.ElementDataType
-  /// - fn getOutputTypeCount(self: *const OpType) usize
-  /// - fn createKernel(self: *const OpType, api: *const Api.c.OrtApi, info: *const KernelInfo) !*KernelType
-  /// - (Optional) fn getInputCharacteristic(self: *const OpType, index: usize) InputOutputCharacteristic
-  /// - (Optional) fn getOutputCharacteristic(self: *const OpType, index: usize) InputOutputCharacteristic
-  /// - (Optional) fn getInputMemoryType(self: *const OpType, index: usize) Allocator.MemoryType
-  ///
-  /// Requirements for KernelType:
-  /// - fn compute(self: *KernelType, context: *KernelContext) !void
-  ///
-  pub fn init(comptime OpType: type, comptime KernelType: type) @This() {
-    const VTable = struct {
-      fn getName(op: ?*const Api.c.OrtCustomOp) callconv(.c) [*:0]const u8 {
-        const self: *CustomOp = @ptrCast(op.?);
-        return self.getName();
-      }
-
-      fn getExecutionProviderType(op: ?*const Api.c.OrtCustomOp) callconv(.c) ?[*:0]const u8 {
-        const self: *CustomOp = @ptrCast(op.?);
-        return self.getExecutionProviderType();
-      }
-
-      fn getInputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
-        const self: *CustomOp = @ptrCast(op.?);
-        return @intFromEnum(self.getInputType(index));
-      }
-
-      fn getInputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
-        const self: *CustomOp = @ptrCast(op.?);
-        return self.getInputTypeCount();
-      }
-
-      fn getOutputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
-        const self: *CustomOp = @ptrCast(op.?);
-        return @intFromEnum(self.getOutputType(index));
-      }
-
-      fn getOutputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
-        const self: *CustomOp = @ptrCast(op.?);
-        return self.getOutputTypeCount();
-      }
-
-      fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel: ?*?*anyopaque) callconv(.c) ?*Error.Status {
-        const self: *CustomOp = @ptrCast(op.?);
-        // We forward the raw C pointers to the user implementation which should expect opaque wrappers
-        // but we cast them here for convenience in the Zig wrapper logic if needed.
-        const k_info: *const KernelInfo = @ptrCast(info.?);
-        
-        const result = self.createKernel(api.?, k_info) catch |err| {
-          // Convert Zig error to OrtStatus
-          // Note: Simplified error mapping. Ideally mapping specific errors to ORT codes.
-          const msg = @errorName(err);
-          return Error.Status.init(Api.c.ORT_FAIL, msg);
-        };
-        
-        kernel.?.* = result;
-        return null; // OK
-      }
-
-      fn kernelComputeV2(kernel: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Error.Status {
-        const self: *KernelType = @ptrCast(@alignCast(kernel.?));
-        const k_ctx: *KernelContext = @ptrCast(context.?);
-        
-        self.compute(k_ctx) catch |err| {
-          return Error.Status.init(Api.c.ORT_FAIL, @errorName(err));
-        };
-        return null;
-      }
-
-      fn kernelDestroy(kernel: ?*anyopaque) callconv(.c) void {
-        const self: *KernelType = @ptrCast(@alignCast(kernel.?));
-        // We assume the user allocated the kernel using an allocator.
-        // Since `createKernel` returns a pointer, we need to know how it was allocated to free it.
-        // For this generic wrapper, we assume `std.heap.c_allocator` was used or the user must manage memory manually
-        // if they construct this differently. 
-        // A common pattern is to use the allocator passed in init, but here we simply destroy.
-        // If the user allocated with a different allocator, they might leak or crash if we enforce c_allocator.
-        // Ideally, the User struct handles destruction via `deinit` or similar, but the C API 
-        // provides this callback.
-        // 
-        // *Assumption*: The user allocates `KernelType` using `std.heap.c_allocator.create(KernelType)`.
-        std.heap.c_allocator.destroy(self);
-      }
-
-      // Optional handlers (default implementations provided if missing in OpType)
-
-      fn getInputCharacteristic(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
-        const self: *CustomOp = @ptrCast(op.?);
-        if (@hasDecl(OpType, "getInputCharacteristic")) {
-          return @intFromEnum(self.getInputCharacteristic(index));
-        }
-        return Api.c.INPUT_OUTPUT_REQUIRED;
-      }
-
-      fn getOutputCharacteristic(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
-        const self: *CustomOp = @ptrCast(op.?);
-        if (@hasDecl(OpType, "getOutputCharacteristic")) {
-          return @intFromEnum(self.getOutputCharacteristic(index));
-        }
-        return Api.c.INPUT_OUTPUT_REQUIRED;
-      }
-
-      fn getInputMemoryType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtMemType {
-        const self: *CustomOp = @ptrCast(op.?);
-        if (@hasDecl(OpType, "getInputMemoryType")) {
-          return @intFromEnum(self.getInputMemoryType(index));
-        }
-        return Api.c.OrtMemTypeDefault;
-      }
+    pub const InputOutputCharacteristic = enum(c_uint) {
+      Required = @bitCast(Api.c.INPUT_OUTPUT_REQUIRED),
+      Optional = @bitCast(Api.c.INPUT_OUTPUT_OPTIONAL),
+      Variadic = @bitCast(Api.c.INPUT_OUTPUT_VARIADIC),
     };
 
-    return .{
-      .underlying = .{
-        .version = Api.c.ORT_API_VERSION,
-        .CreateKernel = null, // Using V2
-        .GetName = VTable.getName,
-        .GetExecutionProviderType = VTable.getExecutionProviderType,
-        .GetInputType = VTable.getInputType,
-        .GetInputTypeCount = VTable.getInputTypeCount,
-        .GetOutputType = VTable.getOutputType,
-        .GetOutputTypeCount = VTable.getOutputTypeCount,
-        .KernelCompute = null, // Using V2
-        .KernelDestroy = VTable.kernelDestroy,
-        .GetInputCharacteristic = VTable.getInputCharacteristic,
-        .GetOutputCharacteristic = VTable.getOutputCharacteristic,
-        .GetInputMemoryType = VTable.getInputMemoryType,
-        .GetVariadicInputMinArity = null,
-        .GetVariadicInputHomogeneity = null,
-        .GetVariadicOutputMinArity = null,
-        .GetVariadicOutputHomogeneity = null,
-        .CreateKernelV2 = VTable.createKernelV2,
-        .KernelComputeV2 = VTable.kernelComputeV2,
-        .InferOutputShapeFn = null,
-        .GetStartVersion = null,
-        .GetEndVersion = null,
-        .GetMayInplace = null,
-        .ReleaseMayInplace = null,
-        .GetAliasMap = null,
-        .ReleaseAliasMap = null,
-      },
+    /// Initialize a CustomOp structure with vtables pointing to the provided OpType and KernelType.
+    ///
+    /// Requirements for OpType:
+    /// - Must have a field `ort_op: Op.Custom` (used for @fieldParentPtr)
+    /// - fn getName(self: *const OpType) [*:0]const u8
+    /// - fn getExecutionProviderType(self: *const OpType) ?[*:0]const u8
+    /// - fn getInputType(self: *const OpType, index: usize) Value.Sub.Tensor.ElementDataType
+    /// - fn getInputTypeCount(self: *const OpType) usize
+    /// - fn getOutputType(self: *const OpType, index: usize) Value.Sub.Tensor.ElementDataType
+    /// - fn getOutputTypeCount(self: *const OpType) usize
+    /// - fn createKernel(self: *const OpType, api: *const Api.c.OrtApi, info: *const KernelInfo) !*KernelType
+    /// - (Optional) fn getInputCharacteristic(self: *const OpType, index: usize) InputOutputCharacteristic
+    /// - (Optional) fn getOutputCharacteristic(self: *const OpType, index: usize) InputOutputCharacteristic
+    /// - (Optional) fn getInputMemoryType(self: *const OpType, index: usize) Allocator.MemoryType
+    ///
+    /// Requirements for KernelType:
+    /// - fn compute(self: *KernelType, context: *KernelContext) !void
+    ///
+    pub fn init(comptime OpType: type, comptime KernelType: type) @This() {
+      const VTable = struct {
+        fn getName(op: ?*const Api.c.OrtCustomOp) callconv(.c) [*:0]const u8 {
+          const self: *Op.Custom = @ptrCast(op.?);
+          return self.getName();
+        }
+
+        fn getExecutionProviderType(op: ?*const Api.c.OrtCustomOp) callconv(.c) ?[*:0]const u8 {
+          const self: *Op.Custom = @ptrCast(op.?);
+          return self.getExecutionProviderType();
+        }
+
+        fn getInputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
+          const self: *Op.Custom = @ptrCast(op.?);
+          return @intFromEnum(self.getInputType(index));
+        }
+
+        fn getInputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
+          const self: *Op.Custom = @ptrCast(op.?);
+          return self.getInputTypeCount();
+        }
+
+        fn getOutputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
+          const self: *Op.Custom = @ptrCast(op.?);
+          return @intFromEnum(self.getOutputType(index));
+        }
+
+        fn getOutputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
+          const self: *Op.Custom = @ptrCast(op.?);
+          return self.getOutputTypeCount();
+        }
+
+        fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel: ?*?*anyopaque) callconv(.c) ?*Error.Status {
+          const self: *Op.Custom = @ptrCast(op.?);
+          // We forward the raw C pointers to the user implementation which should expect opaque wrappers
+          // but we cast them here for convenience in the Zig wrapper logic if needed.
+          const k_info: *const KernelInfo = @ptrCast(info.?);
+          
+          const result = self.createKernel(api.?, k_info) catch |err| {
+            // Convert Zig error to OrtStatus
+            // Note: Simplified error mapping. Ideally mapping specific errors to ORT codes.
+            const msg = @errorName(err);
+            return Error.Status.init(Api.c.ORT_FAIL, msg);
+          };
+          
+          kernel.?.* = result;
+          return null; // OK
+        }
+
+        fn kernelComputeV2(kernel: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Error.Status {
+          const self: *KernelType = @ptrCast(@alignCast(kernel.?));
+          const k_ctx: *KernelContext = @ptrCast(context.?);
+          
+          self.compute(k_ctx) catch |err| {
+            return Error.Status.init(Api.c.ORT_FAIL, @errorName(err));
+          };
+          return null;
+        }
+
+        fn kernelDestroy(kernel: ?*anyopaque) callconv(.c) void {
+          const self: *KernelType = @ptrCast(@alignCast(kernel.?));
+          // We assume the user allocated the kernel using an allocator.
+          // Since `createKernel` returns a pointer, we need to know how it was allocated to free it.
+          // For this generic wrapper, we assume `std.heap.c_allocator` was used or the user must manage memory manually
+          // if they construct this differently. 
+          // A common pattern is to use the allocator passed in init, but here we simply destroy.
+          // If the user allocated with a different allocator, they might leak or crash if we enforce c_allocator.
+          // Ideally, the User struct handles destruction via `deinit` or similar, but the C API 
+          // provides this callback.
+          // 
+          // *Assumption*: The user allocates `KernelType` using `std.heap.c_allocator.create(KernelType)`.
+          std.heap.c_allocator.destroy(self);
+        }
+
+        // Optional handlers (default implementations provided if missing in OpType)
+
+        fn getInputCharacteristic(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
+          const self: *Op.Custom = @ptrCast(op.?);
+          if (@hasDecl(OpType, "getInputCharacteristic")) {
+            return @intFromEnum(self.getInputCharacteristic(index));
+          }
+          return Api.c.INPUT_OUTPUT_REQUIRED;
+        }
+
+        fn getOutputCharacteristic(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
+          const self: *Op.Custom = @ptrCast(op.?);
+          if (@hasDecl(OpType, "getOutputCharacteristic")) {
+            return @intFromEnum(self.getOutputCharacteristic(index));
+          }
+          return Api.c.INPUT_OUTPUT_REQUIRED;
+        }
+
+        fn getInputMemoryType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtMemType {
+          const self: *Op.Custom = @ptrCast(op.?);
+          if (@hasDecl(OpType, "getInputMemoryType")) {
+            return @intFromEnum(self.getInputMemoryType(index));
+          }
+          return Api.c.OrtMemTypeDefault;
+        }
+      };
+
+      return .{
+        .underlying = .{
+          .version = Api.c.ORT_API_VERSION,
+          .CreateKernel = null, // Using V2
+          .GetName = VTable.getName,
+          .GetExecutionProviderType = VTable.getExecutionProviderType,
+          .GetInputType = VTable.getInputType,
+          .GetInputTypeCount = VTable.getInputTypeCount,
+          .GetOutputType = VTable.getOutputType,
+          .GetOutputTypeCount = VTable.getOutputTypeCount,
+          .KernelCompute = null, // Using V2
+          .KernelDestroy = VTable.kernelDestroy,
+          .GetInputCharacteristic = VTable.getInputCharacteristic,
+          .GetOutputCharacteristic = VTable.getOutputCharacteristic,
+          .GetInputMemoryType = VTable.getInputMemoryType,
+          .GetVariadicInputMinArity = null,
+          .GetVariadicInputHomogeneity = null,
+          .GetVariadicOutputMinArity = null,
+          .GetVariadicOutputHomogeneity = null,
+          .CreateKernelV2 = VTable.createKernelV2,
+          .KernelComputeV2 = VTable.kernelComputeV2,
+          .InferOutputShapeFn = null,
+          .GetStartVersion = null,
+          .GetEndVersion = null,
+          .GetMayInplace = null,
+          .ReleaseMayInplace = null,
+          .GetAliasMap = null,
+          .ReleaseAliasMap = null,
+        },
+      };
+    }
+
+    pub const Domain = opaque {
+      /// Create a custom op domain.
+      pub fn init(domain: [*:0]const u8) !*@This() {
+        var out: ?*@This() = null;
+        try Error.check(Api.ort.CreateCustomOpDomain.?(domain, @ptrCast(&out)));
+        return out orelse error.OutOfMemory;
+      }
+
+      /// Add a custom op to the domain.
+      /// The Op.Custom struct must remain valid until the domain is released.
+      pub fn add(self: *@This(), op: *Custom) !void {
+        try Error.check(Api.ort.CustomOpDomain_Add.?(
+          @ptrCast(self),
+          @ptrCast(&op.underlying),
+        ));
+      }
+
+      /// Release the domain.
+      pub fn deinit(self: *@This()) void {
+        Api.ort.ReleaseCustomOpDomain.?(@ptrCast(self));
+      }
     };
-  }
+  };
 };
 
 /// Information about an initializer stored in an external file (e.g., filepath, offset, size).
@@ -5457,7 +5491,7 @@ pub const CustomOp = struct {
 pub const ExternalInitializerInfo = opaque {
   /// Creates an OrtExternalInitializerInfo instance.
   /// Wraps OrtApi::CreateExternalInitializerInfo
-  pub fn init(filepath: [*:0]const Api.c.ORTCHAR_T, file_offset: i64, byte_size: usize) !*@This() {
+  pub fn init(filepath: Utils.Path, file_offset: i64, byte_size: usize) !*@This() {
     var out: ?*@This() = null;
     try Error.check(Api.ort.CreateExternalInitializerInfo.?(
       filepath,
@@ -5472,7 +5506,7 @@ pub const ExternalInitializerInfo = opaque {
   /// The path is relative to the filesystem directory where the ONNX model was stored.
   /// Note: Do NOT free this pointer. It is valid for the lifetime of this object.
   /// Wraps OrtApi::ExternalInitializerInfo_GetFilePath
-  pub fn getFilePath(self: *const @This()) [*:0]const Api.c.ORTCHAR_T {
+  pub fn getFilePath(self: *const @This()) Utils.Path {
     return Api.ort.ExternalInitializerInfo_GetFilePath.?(@ptrCast(self));
   }
 
@@ -5512,51 +5546,45 @@ pub const PrepackedWeightsContainer = opaque {
   }
 };
 
-/// Wrapper around ::OrtLoraAdapter
-/// Holds a set of LoRA Parameters loaded from a single file.
-pub const LoraAdapter = opaque {
-  /// Wraps OrtApi::CreateLoraAdapter
-  /// adapter_path: Path to the LoRA adapter file.
-  /// allocator: Optional allocator. If null, data stays on CPU until inference requires it on device.
-  pub fn init(adapter_path: [*:0]const Api.c.ORTCHAR_T, allocator: *Allocator) !*@This() {
-    var self: ?*@This() = null;
-    try Error.check(Api.ort.CreateLoraAdapter.?(adapter_path, @ptrCast(allocator), @ptrCast(&self)));
-    return self orelse error.OutOfMemory;
-  }
-
-  /// Wraps OrtApi::CreateLoraAdapterFromArray
-  /// bytes: In-memory buffer of the LoRA adapter.
-  pub fn initFromArray(bytes: []const u8, allocator: *Allocator) !*@This() {
-    var self: ?*@This() = null;
-    try Error.check(Api.ort.CreateLoraAdapterFromArray.?(bytes.ptr, bytes.len, @ptrCast(allocator), @ptrCast(&self)));
-    return self orelse error.OutOfMemory;
-  }
-
-  /// Release the LoraAdapter.
-  pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseLoraAdapter.?(@ptrCast(self));
-  }
-};
-
+/// ShapeInferContext provides access to input metadata and attributes during the shape inference phase of an ONNX Runtime Custom Operator.
+///
+/// This context is passed to the custom operator's shape inference function to allow it to compute and set the output shapes based on input shapes and node attributes.
 pub const ShapeInferContext = opaque {
+  /// Returns the number of inputs provided to this operator node.
   pub fn getInputCount(self: *const @This()) !usize {
     var out: usize = 0;
     try Error.check(Api.ort.ShapeInferContext_GetInputCount.?(@ptrCast(self), &out));
     return out;
   }
 
+  /// Get type and shape info of an input tensor.
+  /// 
+  /// index: The zero-based index of the input.
+  ///
+  /// Returns a pointer to the C representation of the tensor's type and shape.
   pub fn getInputTypeShape(self: *const @This(), index: usize) !*TensorTypeAndShapeInfo.C {
     var out: ?*TensorTypeAndShapeInfo.C = null;
     try Error.check(Api.ort.ShapeInferContext_GetInputTypeShape.?(@ptrCast(self), index, @ptrCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
-  pub fn getAttribute(self: *const @This(), name: [*:0]const u8) !?*const OpAttr {
+  /// Get attribute from OrtShapeInferContext. Note that OrtShapeInferContext is a per-node context, one could only read attribute from current node.
+  ///
+  /// name: The null-terminated string name of the attribute as defined in the model.
+  /// 
+  /// Returns an optional pointer to the attribute, or null if the attribute is not found.
+  pub fn getAttribute(self: *const @This(), name: [*:0]const u8) !*const OpAttr {
     var out: ?*const OpAttr = null;
     try Error.check(Api.ort.ShapeInferContext_GetAttribute.?(@ptrCast(self), name, @ptrCast(&out)));
-    return out;
+    return out orelse error.OutOfMemory;
   }
 
+  /// Sets the inferred shape and type for a specific output of the operator.
+  /// 
+  /// This is the "final step" of shape inference where you provide the calculated output dimensions back to the onnx runtime.
+  ///
+  /// index: The zero-based index of the output to set.
+  /// info: The computed type and shape information.
   pub fn setOutputTypeShape(self: *const @This(), index: usize, info: *const TensorTypeAndShapeInfo.C) !void {
     try Error.check(Api.ort.ShapeInferContext_SetOutputTypeShape.?(@ptrCast(self), index, @ptrCast(info)));
   }
@@ -5571,13 +5599,13 @@ const ProviderOptions = struct {
   pub const MIGraphX = Api.c.OrtMIGraphXProviderOptions;
 
   /// Legacy TensorRT options struct
-  pub const TensorRT = Api.c.OrtTensorRTProviderOptions;
+  pub const TensorRT_V1 = Api.c.OrtTensorRTProviderOptions;
 
   /// Legacy CUDA options struct
-  pub const CUDA = Api.c.OrtCUDAProviderOptions;
+  pub const CUDA_V1 = Api.c.OrtCUDAProviderOptions;
 
   /// TensorRT Provider Options (V2)
-  pub const TensorRTV2 = opaque {
+  pub const TensorRT = opaque {
     /// Wraps OrtApi::CreateTensorRTProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
@@ -5652,7 +5680,7 @@ const ProviderOptions = struct {
   };
 
   /// CUDA Provider Options (V2)
-  pub const CUDAV2 = opaque {
+  pub const CUDA = opaque {
     /// Wraps OrtApi::CreateCUDAProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
