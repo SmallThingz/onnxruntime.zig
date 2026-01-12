@@ -1058,7 +1058,7 @@ pub const Training = struct {
     ///
     /// property_name: Name of the property being retrieved.
     /// allocator: Allocator used to allocate the memory for the property_value.
-    pub fn getProperty(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !struct { type: PropertyType, value: *anyopaque } {
+    pub fn getProperty(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !PropertyUnion {
       var out_type: PropertyType = undefined;
       var out_val: ?*anyopaque = null;
       try Error.check(api.underlying.GetProperty.?(
@@ -1068,15 +1068,25 @@ pub const Training = struct {
         @ptrCast(&out_type),
         &out_val
       ));
-      return .{ .type = out_type, .value = out_val orelse return error.OutOfMemory };
+
+      const val = out_val orelse return error.OutOfMemory;
+      switch (out_type) {
+        inline else => |t| return @unionInit(PropertyUnion, @tagName(t), @alignCast(@ptrCast(val))),
+      }
+      unreachable;
     }
 
     pub const PropertyType = enum(c_uint) {
-      Int = @bitCast(Api.c.OrtIntProperty),
-      Float = @bitCast(Api.c.OrtFloatProperty),
-      String = @bitCast(Api.c.OrtStringProperty),
+      int = @bitCast(Api.c.OrtIntProperty),
+      float = @bitCast(Api.c.OrtFloatProperty),
+      string = @bitCast(Api.c.OrtStringProperty),
     };
 
+    pub const PropertyUnion = union(PropertyType) {
+      int: *c_int,
+      float: *f32,
+      string: [*:0]u8,
+    };
 
     /// Retrieves the type and shape information of the parameter associated with the given parameter name.
     ///
