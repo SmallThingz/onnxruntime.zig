@@ -38,14 +38,14 @@ pub const Utils = struct {
           self._vals[self.len] = switch (@typeInfo(@TypeOf(v))) {
             .optional => |oi| switch (@typeInfo(oi.child)) {
               .pointer => |pi| switch (pi.size) {
-                .one, .c, .many => @intFromPtr(v.?),
-                .slice => @intFromPtr(v.?.ptr),
+                .one => v.?,
+                .c, .many, .slice => @compileError("unreachable"),
               },
               else => @compileError("unreachable"),
             },
             .pointer => |pi| switch (pi.size) {
-              .one, .c, .many => @intFromPtr(v),
-              .slice => @intFromPtr(v.ptr),
+              .one => v,
+              .c, .many, .slice => @compileError("unreachable"),
             },
             else => @compileError("unreachable"),
           };
@@ -72,7 +72,7 @@ pub const Utils = struct {
     return .fromInstance(instance);
   }
 
-  pub fn CopyPointerAttrs(From: type, size: std.builtin.Type.Pointer.Size, To: type) type {
+  fn CopyPointerAttrs(From: type, size: std.builtin.Type.Pointer.Size, To: type) type {
     const info = @typeInfo(From).pointer;
     return @Type(.{
       .pointer = .{
@@ -806,9 +806,9 @@ pub const Ep = struct {
       return self.underlying.GetVersion.?(@ptrCast(self));
     }
 
-    pub fn validateCompatibility(self: *@This(), devices: []const *const HardwareDevice, info: [*:0]const u8) !Api.c.OrtCompiledModelCompatibility {
-      var out: Api.c.OrtCompiledModelCompatibility = undefined;
-      try Error.check(self.underlying.ValidateCompiledModelCompatibilityInfo.?(@ptrCast(self), @ptrCast(devices.ptr), devices.len, info, &out));
+    pub fn validateCompatibility(self: *@This(), devices: []const *const HardwareDevice, info: [*:0]const u8) !Api.compiler.CompiledModelCompatibility {
+      var out: Api.compiler.CompiledModelCompatibility = undefined;
+      try Error.check(self.underlying.ValidateCompiledModelCompatibilityInfo.?(@ptrCast(self), @ptrCast(devices.ptr), devices.len, info, @ptrCast(&out)));
       return out;
     }
 
@@ -999,7 +999,7 @@ pub const Training = struct {
     ///
     /// checkpoint_path: Path to the checkpoint file
     /// checkpoint_state: Checkpoint state that contains the states of the training session.
-    pub fn load(path: [*:0]const u8) !*@This() {
+    pub fn load(path: Utils.Path) !*@This() {
       var out: ?*@This() = null;
       try Error.check(api.underlying.LoadCheckpoint.?(path, @ptrCast(&out)));
       return out orelse error.OutOfMemory;
@@ -1025,7 +1025,7 @@ pub const Training = struct {
     /// checkpoint_state: The checkpoint state to save.
     /// checkpoint_path: Path to the checkpoint file.
     /// include_optimizer_state: Flag to indicate whether to save the optimizer state or not.
-    pub fn save(self: *@This(), path: [*:0]const u8, include_optimizer_state: bool) !void {
+    pub fn save(self: *@This(), path: Utils.Path, include_optimizer_state: bool) !void {
       try Error.check(api.underlying.SaveCheckpoint.?(
         @ptrCast(self), 
         path, 
@@ -1071,6 +1071,7 @@ pub const Training = struct {
 
       const val = out_val orelse return error.OutOfMemory;
       switch (out_type) {
+        // Aligncast is ok since the alignment must match that of the returned type and because anyopaque pointers have no associated alignment
         inline else => |t| return @unionInit(PropertyUnion, @tagName(t), @alignCast(@ptrCast(val))),
       }
       unreachable;
@@ -1282,7 +1283,7 @@ pub const Training = struct {
       self: *@This(),
       run_options: ?*const RunOptions,
       inputs: []const *const Value,
-      outputs: []*Value,
+      outputs: []?*Value,
     ) !void {
       try Error.check(api.underlying.TrainStep.?(
         @ptrCast(self),
@@ -1415,7 +1416,7 @@ pub const Training = struct {
     /// \param[in] trainable_only Whether to skip non-trainable parameters
     /// \param[out] parameters_buffer The pre-allocated OrtValue buffer to copy onto.
     pub fn copyParametersToBuffer(self: *@This(), trainable_only: bool) !*Value {
-      var out: ?*Value = undefined;
+      var out: ?*Value = null;
       try Error.check(api.underlying.CopyParametersToBuffer.?(@ptrCast(self), @ptrCast(&out), trainable_only));
       return out orelse error.OutOfMemory;
     }
@@ -1434,7 +1435,7 @@ pub const Training = struct {
     /// \param[in] sess The `this` pointer to the training session.
     /// \param[in] trainable_only Whether to skip non-trainable parameters
     pub fn copyBufferToParameters(self: *@This(), trainable_only: bool) !*Value {
-      var out: ?*Value = undefined;
+      var out: ?*Value = null;
       try Error.check(api.underlying.CopyBufferToParameters.?(@ptrCast(self), @ptrCast(&out), trainable_only));
       return out orelse error.OutOfMemory;
     }
@@ -1600,7 +1601,7 @@ pub const Api = struct {
     }
 
     /// Wraps OrtApi::RegisterExecutionProviderLibrary
-    pub fn registerExecutionProviderLibrary(registration_name: [*:0]const u8, path: [*:0] const c.ORTCHAR_T) !void {
+    pub fn registerExecutionProviderLibrary(registration_name: [*:0]const u8, path: Utils.Path) !void {
       try Error.check(ort.RegisterExecutionProviderLibrary.?(underlying, @ptrCast(registration_name), path));
     }
 
@@ -1685,7 +1686,7 @@ pub const Api = struct {
     }
 
     /// Create an OrtSession to augment an existing model (from path).
-    pub fn createModelEditorSession(model_path: [*:0]const c.ORTCHAR_T, options: *const Session.Options.C) !*Session {
+    pub fn createModelEditorSession(model_path: Utils.Path, options: *const Session.Options.C) !*Session {
       var out: ?*Session = null;
       try Error.check(underlying.CreateModelEditorSession.?(env.underlying, model_path, @ptrCast(options), @ptrCast(&out)));
       return out orelse return error.OutOfMemory;
@@ -1736,6 +1737,13 @@ pub const Api = struct {
     comptime {
       std.debug.assert(@bitSizeOf(Flags) == 32);
     }
+
+    pub const CompiledModelCompatibility = enum(c_uint) {
+      NOT_APPLICABLE = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_NOT_APPLICABLE),
+      SUPPORTED_OPTIMAL = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_SUPPORTED_OPTIMAL),
+      SUPPORTED_PREFER_RECOMPILATION = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_SUPPORTED_PREFER_RECOMPILATION),
+      UNSUPPORTED = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_UNSUPPORTED),
+    };
   };
 
   const Options = struct {
@@ -1809,7 +1817,7 @@ pub const Api = struct {
     compiler.underlying = if (options.compiler) ort.GetCompileApi.?() else comptime_options.impl(comptime_options.compile_behavior, c.OrtCompileApi);
     Ep.api.underlying = if (options.ep) ort.GetEpApi.?() else comptime_options.impl(comptime_options.ep_behavior, c.OrtEpApi);
     const training_fallback = comptime_options.impl(comptime_options.training_behavior, c.OrtTrainingApi);
-    Training.api.underlying = if (options.training) (ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse training_fallback) else training_fallback;
+    Training.api.underlying = if (options.training) (ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
 
     Api.env.underlying = .init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
     errdefer Api.env.deinit();
@@ -1889,7 +1897,7 @@ pub const Api = struct {
     ep_devices: []const *const Ep.Device,
     compatibility_info: [*:0]const u8
   ) !Api.c.OrtCompiledModelCompatibility {
-    var out: Api.c.OrtCompiledModelCompatibility = undefined;
+    var out: compiler.CompiledModelCompatibility = undefined;
     try Error.check(Api.ort.GetModelCompatibilityForEpDevices.?(
         @ptrCast(ep_devices.ptr),
         ep_devices.len,
@@ -2039,7 +2047,7 @@ pub const Error = struct {
 pub const KeyValuePairs = opaque {
   /// Wraps OrtApi::CreateKeyValuePairs
   pub fn init() !*@This() {
-    var retval: ?*@This() = undefined;
+    var retval: ?*@This() = null;
     Api.ort.CreateKeyValuePairs.?(@ptrCast(&retval));
     return retval orelse error.OutOfMemory;
   }
@@ -2081,7 +2089,7 @@ pub const SyncStream = opaque {
   /// Wraps OrtApi::CreateSyncStreamForEpDevice
   /// stream_options: Optional KeyValuePairs for stream configuration.
   pub fn init(device: *const Ep.Device, stream_options: ?*const KeyValuePairs) !*@This() {
-    var retval: ?*@This() = undefined;
+    var retval: ?*@This() = null;
     try Error.check(Api.ort.CreateSyncStreamForEpDevice.?(@ptrCast(device), @ptrCast(stream_options), @ptrCast(&retval)));
     return retval orelse error.OutOfMemory;
   }
@@ -2179,7 +2187,7 @@ pub const Allocator = struct {
 
     /// Create the configuration of an arena that can be used to define an arena-based allocator's behavior.
     pub fn init_DeprecatedV1(options: Options) !*@This() {
-      var self: *@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateArenaCfg.?(
         options.max_mem,
         @intFromEnum(options.extend_strategy),
@@ -2187,7 +2195,7 @@ pub const Allocator = struct {
         options.max_dead,
         @ptrCast(&self)
       ));
-      return self;
+      return self orelse error.OutOfMemory;
     }
 
     /// Supported keys are (See https://onnxruntime.ai/docs/get-started/with-c.html for details on what the
@@ -2233,9 +2241,9 @@ pub const Allocator = struct {
     /// Create an ArenaCfg using key-value pairs of configuration options.
     pub fn init(options: OptionsV2) !*@This() {
       const created = Utils.createOptionsKVL(options, .usize);
-      var self: *@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateArenaCfgV2.?(created.keys(), created.vals(), created.len, @ptrCast(&self)));
-      return self;
+      return self orelse error.OutOfMemory;
     }
 
     /// Release the ArenaCfg object.
@@ -2329,18 +2337,18 @@ pub const Allocator = struct {
     /// id_: Device ID.
     /// mem_type: Memory type (Input vs Output vs Default).
     pub fn init(name_: [*:0]const u8, alloc_type: Allocator.Type, id_: i32, mem_type: MemoryType) !*@This() {
-      var self: *@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateMemoryInfo.?(name_, @intFromEnum(alloc_type), id_, @intFromEnum(mem_type), @ptrCast(&self)));
-      return self;
+      return self orelse error.OutOfMemory;
     }
 
     /// Create an ::OrtMemoryInfo for CPU memory
     /// Special case version of OrtApi::CreateMemoryInfo for CPU based memory. 
     /// Same as using OrtApi::CreateMemoryInfo with name = "Cpu" and id = 0.
     pub fn initCpu(alloc_type: Allocator.Type, mem_type: MemoryType) !*@This() {
-      var self: *@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateCpuMemoryInfo.?(@intFromEnum(alloc_type), @intFromEnum(mem_type), @ptrCast(&self)));
-      return self;
+      return self orelse error.OutOfMemory;
     }
 
     pub const OptionsV2 = struct {
@@ -2363,7 +2371,7 @@ pub const Allocator = struct {
     /// Create an ::OrtMemoryInfo (V2)
     /// This version allows specifying device types, vendor IDs, and alignment.
     pub fn initV2(options: OptionsV2) !*@This() {
-      var self: *@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateMemoryInfo_V2.?(
         options.name,
         @intFromEnum(options.device_type),
@@ -2374,7 +2382,7 @@ pub const Allocator = struct {
         @intFromEnum(options.allocator_type),
         @ptrCast(&self)
       ));
-      return self;
+      return self orelse error.OutOfMemory;
     }
 
     /// Compare ::OrtMemoryInfo objects for equality
@@ -2778,7 +2786,7 @@ pub const ThreadingOptions = struct {
   pub const C = opaque {
     /// Wraps OrtApi::CreateThreadingOptions
     pub fn init() !*@This() {
-      var self: ?*@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateThreadingOptions.?(@ptrCast(&self)));
       return self orelse error.OutOfMemory;
     }
@@ -2853,9 +2861,9 @@ pub const TensorTypeAndShapeInfo = struct {
   pub const C = opaque {
     /// Create an ::OrtTensorTypeAndShapeInfo object
     pub fn init() !*@This() {
-      var self: *@This() = undefined;
+      var self: ?*@This() = null;
       try Error.check(Api.ort.CreateTensorTypeAndShapeInfo.?(@ptrCast(&self)));
-      return self;
+      return self orelse error.OutOfMemory;
     }
 
     pub fn getSymbolicDimensions(self: *const @This(), gpa: std.mem.Allocator) ![][*:0]const u8 {
@@ -3106,7 +3114,15 @@ pub const Value = opaque {
       /// ORT will take ownership of the memory and free it using the provided deleter when no longer in use.
       pub fn initWithDataAndDeleter(deleter: *Allocator, p_data: []u8, shape: []const i64, dtype: Value.Sub.Tensor.ElementDataType) !*@This() {
         var self: ?*@This() = null;
-        try Error.check(Api.ort.CreateTensorWithDataAndDeleterAsOrtValue.?(@ptrCast(deleter), @ptrCast(p_data.ptr), p_data.len, shape.ptr, shape.len, @intFromEnum(dtype), @ptrCast(&self)));
+        try Error.check(Api.ort.CreateTensorWithDataAndDeleterAsOrtValue.?(
+            @ptrCast(deleter),
+            @ptrCast(p_data.ptr),
+            p_data.len,
+            shape.ptr,
+            shape.len,
+            @intFromEnum(dtype),
+            @ptrCast(&self)
+        ));
         return self orelse error.OutOfMemory;
       }
 
@@ -3115,25 +3131,25 @@ pub const Value = opaque {
       pub fn getData(self: *@This(), comptime T: type) ![]T {
         var ptr: ?[*]T = null;
         try Error.check(Api.ort.GetTensorMutableData.?(@ptrCast(self), @ptrCast(&ptr)));
-        return (ptr orelse error.OutOfMemory)[0 .. try self.getTensorSizeInBytes() / @sizeOf(T)];
+        return (ptr orelse error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
       /// Get a const pointer to the raw data inside a tensor
       pub fn getDataConst(self: *const @This(), comptime T: type) ![]const u8 {
         var ptr: ?[*]const u8 = null;
         try Error.check(Api.ort.GetTensorData.?(@ptrCast(self), @ptrCast(&ptr)));
-        return (ptr orelse error.OutOfMemory)[0 .. try self.getTensorSizeInBytes() / @sizeOf(T)];
+        return (ptr orelse error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
       /// Compute total size in bytes of the tensor data contained in an OrtValue.
-      pub fn getSizeInBytes(self: *@This()) !usize {
+      pub fn getSizeInBytes(self: *const @This()) !usize {
         var out: usize = 0;
         try Error.check(Api.ort.GetTensorSizeInBytes.?(@ptrCast(self), &out));
         return out;
       }
 
       /// Get type and shape information from a tensor ::OrtValue
-      pub fn getTypeAndShape(self: *@This()) !*TensorTypeAndShapeInfo.C {
+      pub fn getTypeAndShape(self: *const @This()) !*TensorTypeAndShapeInfo.C {
         var out: ?*TensorTypeAndShapeInfo.C = null;
         try Error.check(Api.ort.GetTensorTypeAndShape.?(@ptrCast(self), @ptrCast(&out)));
         return out orelse error.OutOfMemory;
@@ -3805,7 +3821,7 @@ pub const Graph = opaque {
   pub fn getModelPath(self: *const @This()) !Utils.Path {
     var out: ?Utils.Path = null;
     try Error.check(Api.ort.Graph_GetModelPath.?(@ptrCast(self), @ptrCast(&out)));
-    return out orelse @ptrCast(""); // Assuming empty string literal is compatible or mapped
+    return out orelse @ptrCast(&[_]Utils.PathChar{0}); // Assuming empty string literal is compatible or mapped
   }
 
   /// Returns the ONNX IR version.
@@ -4523,9 +4539,9 @@ pub const Session = struct {
 
     pub const C = opaque {
       pub fn init() !*@This() {
-        var self: *@This() = undefined;
+        var self: ?*@This() = null;
         try Error.check(Api.ort.CreateSessionOptions.?(@ptrCast(&self)));
-        return self;
+        return self orelse error.OutOfMemory;
       }
 
       pub fn addFreeDimensionOverride(self: *@This(), denotation: [*:0]const u8, dim: i64) !void {
@@ -4722,9 +4738,9 @@ pub const Session = struct {
       /// The handle to the loaded library is returned in library_handle. It can be freed by the caller after all sessions using the passed in
       /// session options are destroyed, or if an error occurs and it is non null.
       pub fn registerCustomOpsLibrary_DeprecatedV1(self: *@This(), path: Utils.Path) !*anyopaque {
-        var retval: *anyopaque = undefined;
+        var retval: ?*anyopaque = undefined;
         try Error.check(Api.ort.RegisterCustomOpsLibrary.?(@ptrCast(self), path, @ptrCast(&retval)));
-        return retval;
+        return retval orelse error.OutOfMemory;
       }
 
       /// Replace initialized Tensors with external data from files in memory.
@@ -5010,7 +5026,7 @@ pub const Session = struct {
     input_names: []const [*:0]const u8,
     input_values: []*const Value, 
     output_names: []const [*:0]const u8,
-    output_values: []*Value,
+    output_values: []?*Value,
   ) !void {
     std.debug.assert(input_names.len == input_values.len);
     std.debug.assert(output_names.len == output_values.len);
@@ -5568,16 +5584,16 @@ pub const HardwareDevice = opaque {
     return @enumFromInt(Api.ort.HardwareDevice_Type.?(@ptrCast(self)));
   }
 
+  /// Returns the hardware device's vendor name as a null-terminated string. DO NOT FREE
+  /// Wraps OrtApi::HardwareDevice_Vendor
+  pub fn getVendor(self: *const @This()) [*:0]const u8 {
+    return @ptrCast(Api.ort.HardwareDevice_Vendor.?(@ptrCast(self)));
+  }
+
   /// Returns the hardware device's vendor identifier (e.g., PCI Vendor ID).
   /// Wraps OrtApi::HardwareDevice_VendorId
   pub fn getVendorId(self: *const @This()) u32 {
     return Api.ort.HardwareDevice_VendorId.?(@ptrCast(self));
-  }
-
-  /// Returns the hardware device's vendor name as a null-terminated string.
-  /// Wraps OrtApi::HardwareDevice_Vendor
-  pub fn getVendor(self: *const @This()) [*:0]const u8 {
-    return @ptrCast(Api.ort.HardwareDevice_Vendor.?(@ptrCast(self)));
   }
 
   /// Returns the hardware device's unique identifier.
@@ -5591,7 +5607,8 @@ pub const HardwareDevice = opaque {
   /// Note: ORT owns this instance; do NOT call deinit/ReleaseKeyValuePairs on it.
   /// Wraps OrtApi::HardwareDevice_Metadata
   pub fn getMetadata(self: *const @This()) *const KeyValuePairs {
-    return @ptrCast(Api.ort.HardwareDevice_Metadata.?(@ptrCast(self)));
+    // returns null only if the input device is null
+    return @ptrCast(Api.ort.HardwareDevice_Metadata.?(@ptrCast(self)) orelse return error.OutOfMemory);
   }
 };
 
@@ -5947,16 +5964,14 @@ pub const ShapeInferContext = opaque {
   ///
   /// Returns:
   /// - A pointer to the tensor's type and shape.
-  /// - `null` if the input is optional and was not provided in the model.
   /// - An error if the ORT call fails.
   ///
   /// You must NOT free the returned pointer.
-  pub fn getInputTypeShape(self: *const @This(), index: usize) !?*TensorTypeAndShapeInfo.C {
+  pub fn getInputTypeShape(self: *const @This(), index: usize) !*TensorTypeAndShapeInfo.C {
     var out: ?*TensorTypeAndShapeInfo.C = null;
     try Error.check(Api.ort.ShapeInferContext_GetInputTypeShape.?(@ptrCast(self), index, @ptrCast(&out)));
-    // Output may be null if If you query an index for an input that is optional and was not provided
-    // Or may be a malformed model
-    return out;
+    // Api returns an error "Failed to fetch type shape info for the index." if the info is null => null == oom
+    return out orelse error.OutOfMemory;
   }
 
   /// Get attribute from OrtShapeInferContext. Note that OrtShapeInferContext is a per-node context, one could only read attribute from current node.
