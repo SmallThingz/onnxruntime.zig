@@ -5610,10 +5610,6 @@ pub const Op = opaque {
   ) !*@This() {
     std.debug.assert(type_constraint_names.len == type_constraint_values.len);
     var out: ?*@This() = null;
-    
-    // Convert Enum slice to C Int slice if necessary, but here we assume binary compatibility or cast
-    // Since TensorElementDataType is enum(c_uint), it matches C.
-    
     try Error.check(Api.ort.CreateOp.?(
       @ptrCast(info),
       op_name,
@@ -5895,7 +5891,7 @@ pub const ExternalInitializerInfo = opaque {
   /// Note: Do NOT free this pointer. It is valid for the lifetime of this object.
   /// Wraps OrtApi::ExternalInitializerInfo_GetFilePath
   pub fn getFilePath(self: *const @This()) Utils.Path {
-    return Api.ort.ExternalInitializerInfo_GetFilePath.?(@ptrCast(self));
+    return @ptrCast(Api.ort.ExternalInitializerInfo_GetFilePath.?(@ptrCast(self)));
   }
 
   /// Get the byte offset within the file where the initializer's data is stored.
@@ -5949,22 +5945,32 @@ pub const ShapeInferContext = opaque {
   /// 
   /// index: The zero-based index of the input.
   ///
-  /// Returns a pointer to the C representation of the tensor's type and shape.
-  pub fn getInputTypeShape(self: *const @This(), index: usize) !*TensorTypeAndShapeInfo.C {
+  /// Returns:
+  /// - A pointer to the tensor's type and shape.
+  /// - `null` if the input is optional and was not provided in the model.
+  /// - An error if the ORT call fails.
+  ///
+  /// You must NOT free the returned pointer.
+  pub fn getInputTypeShape(self: *const @This(), index: usize) !?*TensorTypeAndShapeInfo.C {
     var out: ?*TensorTypeAndShapeInfo.C = null;
     try Error.check(Api.ort.ShapeInferContext_GetInputTypeShape.?(@ptrCast(self), index, @ptrCast(&out)));
-    return out orelse error.OutOfMemory;
+    // Output may be null if If you query an index for an input that is optional and was not provided
+    // Or may be a malformed model
+    return out;
   }
 
   /// Get attribute from OrtShapeInferContext. Note that OrtShapeInferContext is a per-node context, one could only read attribute from current node.
   ///
   /// name: The null-terminated string name of the attribute as defined in the model.
   /// 
-  /// Returns an optional pointer to the attribute, or null if the attribute is not found.
-  pub fn getAttribute(self: *const @This(), name: [*:0]const u8) !*const OpAttr {
+  /// Returns:
+  /// - A pointer to the attribute if found.
+  /// - `null` if the attribute does not exist on this node.
+  /// - An error if the ORT call fails.
+  pub fn getAttribute(self: *const @This(), name: [*:0]const u8) !?*const OpAttr {
     var out: ?*const OpAttr = null;
     try Error.check(Api.ort.ShapeInferContext_GetAttribute.?(@ptrCast(self), name, @ptrCast(&out)));
-    return out orelse error.OutOfMemory;
+    return out;
   }
 
   /// Sets the inferred shape and type for a specific output of the operator.
@@ -5978,7 +5984,8 @@ pub const ShapeInferContext = opaque {
   }
 };
 
-const ProviderOptions = struct {
+/// Option structs and opaques for providers
+pub const ProviderOptions = struct {
   /// Legacy Struct for OpenVINO. 
   /// Newer versions of ORT recommend using SessionOptionsAppendExecutionProvider_OpenVINO_V2 (which takes map)
   pub const OpenVINO = Api.c.OrtOpenVINOProviderOptions;
@@ -6171,7 +6178,7 @@ const ProviderOptions = struct {
 
 /// If we use std.testing.refAllDeclsRecursive, we get a compile error because c has untranslatable code, hence we use this
 /// Even this touches the translated parts of the c code that we touch, but atleast not it doesn't crash
-pub fn refAllDeclsRecursiveExcerptC(comptime T: type) void {
+fn refAllDeclsRecursiveExcerptC(comptime T: type) void {
   if (!@import("builtin").is_test) return;
   inline for (comptime std.meta.declarations(T)) |decl| {
     _ = &@field(T, decl.name);
