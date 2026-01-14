@@ -38,14 +38,14 @@ pub const Utils = struct {
           self._vals[self.len] = switch (@typeInfo(@TypeOf(v))) {
             .optional => |oi| switch (@typeInfo(oi.child)) {
               .pointer => |pi| switch (pi.size) {
-                .one => v.?,
-                .c, .many, .slice => @compileError("unreachable"),
+                .many => v.?,
+                .c, .one, .slice => @compileError("unreachable"),
               },
               else => @compileError("unreachable"),
             },
             .pointer => |pi| switch (pi.size) {
-              .one => v,
-              .c, .many, .slice => @compileError("unreachable"),
+              .many => v,
+              .c, .one, .slice => @compileError("unreachable"),
             },
             else => @compileError("unreachable"),
           };
@@ -302,7 +302,7 @@ pub const Ep = struct {
     /// Requirements for Implementer:
     /// - Must have a field `data_transfer: DataTransfer` as the a member, we use @fieldParentPtr on that member to get actual pointer
     /// - fn canCopy(self: *const Implementer, src: *const Allocator.MemoryDevice, dst: *const Allocator.MemoryDevice) bool
-    /// - fn copyTensors(self: *Implementer, src: []const *const Value, dst: []*Value, streams: ?[]*SyncStream) ?*Error.Status
+    /// - fn copyTensors(self: *Implementer, src: []const *const Value, dst: []*Value, streams: ?[]*SyncStream) !void
     /// - (Optional) fn deinit(self: *Implementer) void
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
@@ -333,7 +333,9 @@ pub const Ep = struct {
           const dst_zig = @as([*]*Value, @ptrCast(dst))[0..num];
           const streams_zig: ?[]*SyncStream = if (streams != null) @as([*]*SyncStream, @ptrCast(streams))[0..num] else null;
 
-          return @ptrCast(getSelf(self).copyTensors(src_zig, dst_zig, streams_zig));
+          getSelf(self).copyTensors(src_zig, dst_zig, streams_zig) catch |err| {
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          };
         }
       };
 
@@ -391,9 +393,9 @@ pub const Ep = struct {
     ///
     /// Requirements for Implementer:
     /// - Must have a field `sync_notification: SyncNotificationImpl` as a member.
-    /// - fn activate(self: *Implementer) ?*Error.Status
-    /// - fn waitOnDevice(self: *Implementer, consumer_stream: *SyncStream) ?*Error.Status
-    /// - fn waitOnHost(self: *Implementer) ?*Error.Status
+    /// - fn activate(self: *Implementer) !void
+    /// - fn waitOnDevice(self: *Implementer, consumer_stream: *SyncStream) !void
+    /// - fn waitOnHost(self: *Implementer) !void
     /// - (Optional) fn deinit(self: *Implementer) void
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
@@ -406,15 +408,18 @@ pub const Ep = struct {
         }
 
         fn activate(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
-          return @ptrCast(getSelf(self).activate());
+          getSelf(self).activate() catch |err|
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
         }
 
         fn waitOnDevice(self: ?*Api.c.OrtSyncNotificationImpl, stream: ?*Api.c.OrtSyncStream) callconv(.c) ?*Api.c.OrtStatus {
-          return @ptrCast(getSelf(self).waitOnDevice(@as(*SyncStream, @ptrCast(stream.?))));
+          getSelf(self).waitOnDevice(@as(*SyncStream, @ptrCast(stream.?))) catch |err|
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
         }
 
         fn waitOnHost(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
-          return @ptrCast(getSelf(self).waitOnHost());
+          getSelf(self).waitOnHost() catch |err|
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
         }
       };
 
@@ -488,9 +493,9 @@ pub const Ep = struct {
     /// Requirements for Implementer:
     /// - Must have a field `sync_stream: SyncStreamImpl`.
     /// - fn getHandle(self: *Implementer) ?*anyopaque
-    /// - fn createNotification(self: *Implementer, out: **SyncNotificationImpl) ?*Error.Status
-    /// - fn flush(self: *Implementer) ?*Error.Status
-    /// - fn onSessionRunEnd(self: *Implementer) ?*Error.Status
+    /// - fn createNotification(self: *Implementer, out: **SyncNotificationImpl) !void
+    /// - fn flush(self: *Implementer) !void
+    /// - fn onSessionRunEnd(self: *Implementer) !void
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(self: ?*Api.c.OrtSyncStreamImpl) *T {
@@ -506,15 +511,18 @@ pub const Ep = struct {
         }
 
         fn createNotification(self: ?*Api.c.OrtSyncStreamImpl, out: ?*?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
-          return @ptrCast(getSelf(self).createNotification(@as(*?*SyncNotificationImpl, @ptrCast(out.?))));
+          getSelf(self).createNotification(@as(*?*SyncNotificationImpl, @ptrCast(out.?))) catch |err|
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
         }
 
         fn flush(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          return @ptrCast(getSelf(self).flush());
+          getSelf(self).flush() catch |err|
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
         }
 
         fn onSessionRunEnd(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          return @ptrCast(getSelf(self).onSessionRunEnd());
+          getSelf(self).onSessionRunEnd() catch |err|
+            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
         }
       };
 
@@ -1121,10 +1129,8 @@ pub const Training = struct {
     /// with the checkpoint state that contains the parameter being retrieved.
     /// The parameter must exist in the checkpoint state to be able to retrieve it successfully.
     ///
-    /// \param[in] checkpoint_state The checkpoint state.
-    /// \param[in] parameter_name Name of the parameter being retrieved.
-    /// \param[in] allocator Allocator used to allocate the memory for the parameter.
-    /// \param[out] parameter The parameter data that is retrieved from the checkpoint state.
+    /// parameter_name: Name of the parameter being retrieved.
+    /// allocator: Allocator used to allocate the memory for the parameter.
     pub fn getParameter(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
       var out: ?*Value = null;
       try Error.check(api.underlying.GetParameter.?(@ptrCast(self), name, @ptrCast(allocator), @ptrCast(&out)));
@@ -1412,13 +1418,10 @@ pub const Training = struct {
     /// Parameter ordering is preserved.
     /// User is responsible for allocating and freeing the resources used by the parameters_buffer.
     ///
-    /// \param[in] sess The `this` pointer to the training session.
-    /// \param[in] trainable_only Whether to skip non-trainable parameters
-    /// \param[out] parameters_buffer The pre-allocated OrtValue buffer to copy onto.
-    pub fn copyParametersToBuffer(self: *@This(), trainable_only: bool) !*Value {
-      var out: ?*Value = null;
-      try Error.check(api.underlying.CopyParametersToBuffer.?(@ptrCast(self), @ptrCast(&out), trainable_only));
-      return out orelse error.OutOfMemory;
+    /// [out] out_buffer The pre-allocated OrtValue buffer to copy onto.
+    /// trainable_only Whether to skip non-trainable parameters
+    pub fn copyParametersToBuffer(self: *@This(), out_buffer: *Value, trainable_only: bool) !void {
+      try Error.check(api.underlying.CopyParametersToBuffer.?(@ptrCast(self), @ptrCast(out_buffer), trainable_only));
     }
 
     /// Copy parameter values from the given contiguous buffer held by parameters_buffer to the training state
@@ -1432,8 +1435,7 @@ pub const Training = struct {
     /// In case the training session was created with a nominal checkpoint, invoking this function is required
     /// to load the updated parameters onto the checkpoint to complete it.
     ///
-    /// \param[in] sess The `this` pointer to the training session.
-    /// \param[in] trainable_only Whether to skip non-trainable parameters
+    /// trainable_only Whether to skip non-trainable parameters
     pub fn copyBufferToParameters(self: *@This(), trainable_only: bool) !*Value {
       var out: ?*Value = null;
       try Error.check(api.underlying.CopyBufferToParameters.?(@ptrCast(self), @ptrCast(&out), trainable_only));
@@ -1893,16 +1895,13 @@ pub const Api = struct {
   }
 
   /// Validate a compiled model's compatibility information for one or more EP devices.
-  pub fn getModelCompatibilityForEpDevices(
-    ep_devices: []const *const Ep.Device,
-    compatibility_info: [*:0]const u8
-  ) !Api.c.OrtCompiledModelCompatibility {
+  pub fn getModelCompatibilityForEpDevices(ep_devices: []const *const Ep.Device, compatibility_info: [*:0]const u8) !compiler.CompiledModelCompatibility {
     var out: compiler.CompiledModelCompatibility = undefined;
     try Error.check(Api.ort.GetModelCompatibilityForEpDevices.?(
         @ptrCast(ep_devices.ptr),
         ep_devices.len,
         compatibility_info,
-        &out
+        @ptrCast(&out)
     ));
     return out;
   }
@@ -2774,7 +2773,7 @@ pub const ThreadingOptions = struct {
       return .{
         .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
         .create_fn = &struct {
-          pub fn create(ctx: ?*anyopaque, worker: ?*const fn(?*anyopaque) void, arg: ?*anyopaque) Api.c.OrtCustomThreadHandle {
+          pub fn create(ctx: ?*anyopaque, worker: ?*const fn(?*anyopaque) callconv(.c) void, arg: ?*anyopaque) callconv(.c) Api.c.OrtCustomThreadHandle {
             const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(ctx.?);
             return @ptrCast(original.create(worker, arg));
           }
@@ -3817,11 +3816,13 @@ pub const Graph = opaque {
   }
 
   /// Get the filepath to the model from which this OrtGraph was constructed.
-  /// Returns empty string if unknown (e.g. created from memory).
+  /// Returns empty string if unknown (static pointer).
+  /// Do NOT free the returned string.
   pub fn getModelPath(self: *const @This()) !Utils.Path {
     var out: ?Utils.Path = null;
     try Error.check(Api.ort.Graph_GetModelPath.?(@ptrCast(self), @ptrCast(&out)));
-    return out orelse @ptrCast(&[_]Utils.PathChar{0}); // Assuming empty string literal is compatible or mapped
+    // in error case, we return a pointer to a static empty string
+    return out orelse @ptrCast(&[_]Utils.PathChar{0});
   }
 
   /// Returns the ONNX IR version.
@@ -5607,8 +5608,8 @@ pub const HardwareDevice = opaque {
   /// Note: ORT owns this instance; do NOT call deinit/ReleaseKeyValuePairs on it.
   /// Wraps OrtApi::HardwareDevice_Metadata
   pub fn getMetadata(self: *const @This()) *const KeyValuePairs {
-    // returns null only if the input device is null
-    return @ptrCast(Api.ort.HardwareDevice_Metadata.?(@ptrCast(self)) orelse return error.OutOfMemory);
+    // returns null iff the input device is null
+    return @ptrCast(Api.ort.HardwareDevice_Metadata.?(@ptrCast(self)).?);
   }
 };
 
@@ -5971,6 +5972,15 @@ pub const ShapeInferContext = opaque {
     var out: ?*TensorTypeAndShapeInfo.C = null;
     try Error.check(Api.ort.ShapeInferContext_GetInputTypeShape.?(@ptrCast(self), index, @ptrCast(&out)));
     // Api returns an error "Failed to fetch type shape info for the index." if the info is null => null == oom
+    //
+    // https://github.com/microsoft/onnxruntime/blob/669128acd5eb804daa5d756e1dcf349abbdfcdac/onnxruntime/core/session/custom_ops.cc#L335
+    // if (*info) {
+    //   return nullptr;
+    // } else {
+    //   return OrtApis::CreateStatus(OrtErrorCode::ORT_INVALID_ARGUMENT,
+    //                                "Failed to fetch type shape info for the index.");
+    // }
+
     return out orelse error.OutOfMemory;
   }
 
