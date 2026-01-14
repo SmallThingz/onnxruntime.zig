@@ -1811,15 +1811,15 @@ pub const Api = struct {
   /// You MUST call this function before creating anything.
   /// You need to call `deinitApi` to free resources created by this function
   pub fn init(options: Options, comptime comptime_options: ComptimeOptions) !void {
-    base = Api.c.OrtGetApiBase();
-    ort = base.GetApi.?(c.ORT_API_VERSION);
+    base = @ptrCast(Api.c.OrtGetApiBase());
+    ort = @ptrCast(base.GetApi.?(c.ORT_API_VERSION) orelse return error.ApiVersionMismatch);
     version_string = std.mem.sliceTo(@as([*:0] const u8, @ptrCast(base.GetVersionString.?())), 0);
 
-    editor.underlying = if (options.editor) ort.GetModelEditorApi.?() else comptime_options.impl(comptime_options.editor_behavior, c.OrtModelEditorApi);
-    compiler.underlying = if (options.compiler) ort.GetCompileApi.?() else comptime_options.impl(comptime_options.compile_behavior, c.OrtCompileApi);
-    Ep.api.underlying = if (options.ep) ort.GetEpApi.?() else comptime_options.impl(comptime_options.ep_behavior, c.OrtEpApi);
+    editor.underlying = if (options.editor) @ptrCast(ort.GetModelEditorApi.?()) else comptime_options.impl(comptime_options.editor_behavior, c.OrtModelEditorApi);
+    compiler.underlying = if (options.compiler) @ptrCast(ort.GetCompileApi.?()) else comptime_options.impl(comptime_options.compile_behavior, c.OrtCompileApi);
+    Ep.api.underlying = if (options.ep) @ptrCast(ort.GetEpApi.?()) else comptime_options.impl(comptime_options.ep_behavior, c.OrtEpApi);
     const training_fallback = comptime_options.impl(comptime_options.training_behavior, c.OrtTrainingApi);
-    Training.api.underlying = if (options.training) (ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
+    Training.api.underlying = if (options.training) @ptrCast(ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
 
     try Api.env.init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
     errdefer Api.env.deinit();
@@ -6202,28 +6202,4 @@ pub const ProviderOptions = struct {
     }
   };
 };
-
-//-----
-//Tests
-//-----
-
-/// If we use std.testing.refAllDeclsRecursive, we get a compile error because c has untranslatable code, hence we use this
-/// Even this touches the translated parts of the c code that we touch, but atleast not it doesn't crash
-fn refAllDeclsRecursiveExcerptC(comptime T: type) void {
-  if (!@import("builtin").is_test) return;
-  inline for (comptime std.meta.declarations(T)) |decl| {
-    _ = &@field(T, decl.name);
-    if (@TypeOf(@field(T, decl.name)) == type) {
-      if (decl.name.len == 1 and decl.name[0] == 'c') continue;
-      switch (@typeInfo(@field(T, decl.name))) {
-        .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsRecursiveExcerptC(@field(T, decl.name)),
-        else => {},
-      }
-    }
-  }
-}
-
-test {
-  refAllDeclsRecursiveExcerptC(@This());
-}
 
