@@ -39,13 +39,15 @@ pub const Utils = struct {
             .optional => |oi| switch (@typeInfo(oi.child)) {
               .pointer => |pi| switch (pi.size) {
                 .many => v.?,
-                .c, .one, .slice => @compileError("unreachable"),
+                .slice => v.?.ptr,
+                .c, .one => @compileError("unreachable"),
               },
               else => @compileError("unreachable"),
             },
             .pointer => |pi| switch (pi.size) {
               .many => v,
-              .c, .one, .slice => @compileError("unreachable"),
+              .slice => v.ptr,
+              .c, .one => @compileError("unreachable"),
             },
             else => @compileError("unreachable"),
           };
@@ -151,9 +153,8 @@ pub const Ep = struct {
         }
 
         fn getCapability(ptr: ?*Api.c.OrtEp, graph: ?*const Api.c.OrtGraph, info: ?*Api.c.OrtEpGraphSupportInfo) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).getCapability(@ptrCast(graph.?), @ptrCast(info.?)) catch |err| {
+          getSelf(ptr).getCapability(@ptrCast(graph.?), @ptrCast(info.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
@@ -170,9 +171,8 @@ pub const Ep = struct {
           const i_slice = @as([*]*NodeCompute.Info, @ptrCast(infos_out))[0..count];
           const c_slice = @as([*]*Node, @ptrCast(context_nodes_out))[0..count];
 
-          getSelf(ptr).compile(g_slice, f_slice, i_slice, c_slice) catch |err| {
+          getSelf(ptr).compile(g_slice, f_slice, i_slice, c_slice) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
@@ -181,9 +181,8 @@ pub const Ep = struct {
         }
 
         fn getPreferredDataLayout(ptr: ?*Api.c.OrtEp, layout_out: ?*Api.c.OrtEpDataLayout) callconv(.c) ?*Api.c.OrtStatus {
-          const layout = getSelf(ptr).getPreferredDataLayout() catch |err| {
+          const layout = getSelf(ptr).getPreferredDataLayout() catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           layout_out.?.* = @intFromEnum(layout);
           return null;
         }
@@ -194,38 +193,33 @@ pub const Ep = struct {
         }
 
         fn setDynamicOptions(ptr: ?*Api.c.OrtEp, keys: [*c]const [*:0]const u8, vals: [*c]const [*:0]const u8, count: usize) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).setDynamicOptions(keys[0..count], vals[0..count]) catch |err| {
+          getSelf(ptr).setDynamicOptions(keys[0..count], vals[0..count]) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
         fn onRunStart(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).onRunStart(@ptrCast(options.?)) catch |err| {
+          getSelf(ptr).onRunStart(@ptrCast(options.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
         fn onRunEnd(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions, sync: bool) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).onRunEnd(@ptrCast(options.?), sync) catch |err| {
+          getSelf(ptr).onRunEnd(@ptrCast(options.?), sync) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
         fn createAllocator(ptr: ?*Api.c.OrtEp, info: ?*const Api.c.OrtMemoryInfo, out: ?*?*Api.c.OrtAllocator) callconv(.c) ?*Api.c.OrtStatus {
-          const alloc = getSelf(ptr).createAllocator(@ptrCast(info.?)) catch |err| {
+          const alloc = getSelf(ptr).createAllocator(@ptrCast(info.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           out.?.* = @ptrCast(alloc);
           return null;
         }
 
         fn createSyncStreamForDevice(ptr: ?*Api.c.OrtEp, dev: ?*const Api.c.OrtMemoryDevice, out: ?*?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          const stream = getSelf(ptr).createSyncStreamForDevice(@ptrCast(dev.?)) catch |err| {
+          const stream = getSelf(ptr).createSyncStreamForDevice(@ptrCast(dev.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           out.?.* = @ptrCast(stream);
           return null;
         }
@@ -283,7 +277,7 @@ pub const Ep = struct {
           @ptrCast(src.ptr),
           @ptrCast(dst.ptr),
           @ptrCast(if (streams) |s| s.ptr else null),
-          if (streams) |s| s.len else 0
+          src.len,
       ));
     }
 
@@ -333,9 +327,9 @@ pub const Ep = struct {
           const dst_zig = @as([*]*Value, @ptrCast(dst))[0..num];
           const streams_zig: ?[]*SyncStream = if (streams != null) @as([*]*SyncStream, @ptrCast(streams))[0..num] else null;
 
-          getSelf(self).copyTensors(src_zig, dst_zig, streams_zig) catch |err| {
+          getSelf(self).copyTensors(src_zig, dst_zig, streams_zig) catch |err| 
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
+          return null;
         }
       };
 
@@ -410,16 +404,19 @@ pub const Ep = struct {
         fn activate(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).activate() catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          return null;
         }
 
         fn waitOnDevice(self: ?*Api.c.OrtSyncNotificationImpl, stream: ?*Api.c.OrtSyncStream) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).waitOnDevice(@as(*SyncStream, @ptrCast(stream.?))) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          return null;
         }
 
         fn waitOnHost(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).waitOnHost() catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          return null;
         }
       };
 
@@ -513,16 +510,19 @@ pub const Ep = struct {
         fn createNotification(self: ?*Api.c.OrtSyncStreamImpl, out: ?*?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).createNotification(@as(*?*SyncNotificationImpl, @ptrCast(out.?))) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          return null;
         }
 
         fn flush(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).flush() catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          return null;
         }
 
         fn onSessionRunEnd(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).onSessionRunEnd() catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          return null;
         }
       };
 
@@ -617,9 +617,8 @@ pub const Ep = struct {
             ctx: ?*Api.c.OrtNodeComputeContext,
             state_out: ?*?*anyopaque,
           ) callconv(.c) ?*Api.c.OrtStatus {
-            const result = getSelf(self).createState(@ptrCast(ctx.?)) catch |err| {
-                return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-            };
+            const result = getSelf(self).createState(@ptrCast(ctx.?)) catch |err|
+              return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
             state_out.?.* = @ptrCast(result);
             return null;
           }
@@ -629,9 +628,8 @@ pub const Ep = struct {
             state: ?*anyopaque,
             kernel_ctx: ?*Api.c.OrtKernelContext,
           ) callconv(.c) ?*Api.c.OrtStatus {
-            getSelf(self).compute(@ptrCast(state.?), @ptrCast(kernel_ctx.?)) catch |err| {
-                return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-            };
+            getSelf(self).compute(@ptrCast(state.?), @ptrCast(kernel_ctx.?)) catch |err|
+              return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
             return null;
           }
 
@@ -864,9 +862,8 @@ pub const Ep = struct {
           const dev_slice = @as([*]const *const HardwareDevice, @ptrCast(devices))[0..num_devices];
           const ep_out_slice = @as([*]*Ep.Device, @ptrCast(ep_devices_out))[0..max_ep_devices];
 
-          const count = getSelf(ptr).getSupportedDevices(dev_slice, ep_out_slice) catch |err| {
+          const count = getSelf(ptr).getSupportedDevices(dev_slice, ep_out_slice) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           num_ep_devices_out.?.* = count;
           return null;
         }
@@ -883,9 +880,8 @@ pub const Ep = struct {
           const dev_slice = @as([*]const *const HardwareDevice, @ptrCast(devices))[0..num_devices];
           const meta_slice = @as([*]const *const KeyValuePairs, @ptrCast(metadata))[0..num_devices];
 
-          const ep = getSelf(ptr).createEp(dev_slice, meta_slice, @ptrCast(options.?), @ptrCast(logger.?)) catch |err| {
+          const ep = getSelf(ptr).createEp(dev_slice, meta_slice, @ptrCast(options.?), @ptrCast(logger.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           ep_out.?.* = @ptrCast(ep);
           return null;
         }
@@ -920,9 +916,8 @@ pub const Ep = struct {
           opts: ?*const Api.c.OrtKeyValuePairs,
           out: ?*?*Api.c.OrtAllocator,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const alloc = getSelf(ptr).createAllocator(@ptrCast(info), @ptrCast(opts)) catch |err| {
+          const alloc = getSelf(ptr).createAllocator(@ptrCast(info), @ptrCast(opts)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           out.?.* = @ptrCast(alloc);
           return null;
         }
@@ -932,9 +927,8 @@ pub const Ep = struct {
         }
 
         fn createDataTransfer(ptr: ?*Api.c.OrtEpFactory, out: ?*?*Api.c.OrtDataTransferImpl) callconv(.c) ?*Api.c.OrtStatus {
-          const dt = getSelf(ptr).createDataTransfer() catch |err| {
+          const dt = getSelf(ptr).createDataTransfer() catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           out.?.* = @ptrCast(dt);
           return null;
         }
@@ -949,9 +943,8 @@ pub const Ep = struct {
           opts: ?*const Api.c.OrtKeyValuePairs,
           out: ?*?*Api.c.OrtSyncStreamImpl,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const stream = getSelf(ptr).createSyncStreamForDevice(@ptrCast(dev.?), @ptrCast(opts)) catch |err| {
+          const stream = getSelf(ptr).createSyncStreamForDevice(@ptrCast(dev.?), @ptrCast(opts)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           out.?.* = @ptrCast(stream);
           return null;
         }
@@ -1086,15 +1079,24 @@ pub const Training = struct {
     }
 
     pub const PropertyType = enum(c_uint) {
-      int = @bitCast(Api.c.OrtIntProperty),
-      float = @bitCast(Api.c.OrtFloatProperty),
-      string = @bitCast(Api.c.OrtStringProperty),
+      i64 = @bitCast(Api.c.OrtIntProperty),
+      f32 = @bitCast(Api.c.OrtFloatProperty),
+      str = @bitCast(Api.c.OrtStringProperty),
     };
 
     pub const PropertyUnion = union(PropertyType) {
-      int: *c_int,
-      float: *f32,
-      string: [*:0]u8,
+      i64: *i64,
+      f32: *f32,
+      str: [*:0]u8,
+
+      pub fn deinit(self: @This(), allocator: *Allocator) void {
+        const ptr: [*]u8 = switch (self) {
+          .i64 => @ptrCast(self.i64),
+          .f32 => @ptrCast(self.f32),
+          .str => self.str,
+        };
+        allocator.free(ptr);
+      }
     };
 
     /// Retrieves the type and shape information of the parameter associated with the given parameter name.
@@ -1436,10 +1438,8 @@ pub const Training = struct {
     /// to load the updated parameters onto the checkpoint to complete it.
     ///
     /// trainable_only Whether to skip non-trainable parameters
-    pub fn copyBufferToParameters(self: *@This(), trainable_only: bool) !*Value {
-      var out: ?*Value = null;
-      try Error.check(api.underlying.CopyBufferToParameters.?(@ptrCast(self), @ptrCast(&out), trainable_only));
-      return out orelse error.OutOfMemory;
+    pub fn copyBufferToParameters(self: *@This(), out_buffer: *Value, trainable_only: bool) !void {
+      try Error.check(api.underlying.CopyBufferToParameters.?(@ptrCast(self), @ptrCast(out_buffer), trainable_only));
     }
 
     /// Export a model that can be used for inferencing.
@@ -1811,7 +1811,7 @@ pub const Api = struct {
   /// You MUST call this function before creating anything.
   /// You need to call `deinitApi` to free resources created by this function
   pub fn init(options: Options, comptime comptime_options: ComptimeOptions) !void {
-    base = Api.c.OrtGetApiBase().*;
+    base = Api.c.OrtGetApiBase();
     ort = base.GetApi.?(c.ORT_API_VERSION);
     version_string = std.mem.sliceTo(@as([*:0] const u8, @ptrCast(base.GetVersionString.?())), 0);
 
@@ -1821,10 +1821,10 @@ pub const Api = struct {
     const training_fallback = comptime_options.impl(comptime_options.training_behavior, c.OrtTrainingApi);
     Training.api.underlying = if (options.training) (ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
 
-    Api.env.underlying = .init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
+    try Api.env.init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
     errdefer Api.env.deinit();
 
-    if (options.telemetry_events) |state| env.setTelemetryEventsState(state);
+    if (options.telemetry_events) |state| try env.setTelemetryEventsState(state);
   }
 
   /// Frees the resources created by the `Api.init` function
@@ -2069,7 +2069,7 @@ pub const KeyValuePairs = opaque {
   }
 
   /// Wraps OrtApi::GetKeyValuePairs
-  /// Returns slices of keys and values. These pointers are valid as long as the KeyValuePairs object is valid.
+  /// Returns slices of keys and values. These pointers are valid as long as the KeyValuePairs object is valid. No need to free these
   pub fn getKeyValues(self: *const @This()) std.meta.Tuple(&.{ []const [*:0]const u8, []const [*:0]const u8 }) {
     var keys_ptr: [*c]const [*:0]const u8 = &[_][*:0]const u8{};
     var values_ptr: [*c]const [*:0]const u8 = &[_][*:0]const u8{};
@@ -3240,6 +3240,7 @@ pub const Value = opaque {
       }
 
       ///  At index 0 is key, 1 is value
+      ///  You must deinit the returned values
       pub fn getKV(self: *const @This(), allocator: *Allocator) !std.meta.Tuple(&.{*Value, *Value}) {
         const v = self.toValue();
         const keys = try v._getValue(0, allocator);
@@ -4483,7 +4484,7 @@ pub const Session = struct {
     /// See [docs/ONNX_Runtime_Perf_Tuning.md] in the onnxruntime repo for more details.
     execution_mode: ExecutionMode = .SEQUENTIAL,
     /// weather profiling is enabled / disabled for a session. Setting this to a non-null value will enable profiling with this profiling name
-    profiling: ?[:0]const u8 = null,
+    profiling: ?Utils.Path = null,
     /// The idea is if the input shapes are the same, we could trace the internal memory allocation
     /// and generate a memory pattern for future request. So next time we could just do one allocation
     /// with a big chunk for all the internal memory allocation.
@@ -4628,9 +4629,9 @@ pub const Session = struct {
         try Error.check(Api.ort.SetSessionExecutionMode.?(@ptrCast(self), @intFromEnum(mode)));
       }
 
-      pub fn setProfiling(self: *@This(), status: ?[:0]const u8) !void {
+      pub fn setProfiling(self: *@This(), status: ?Utils.Path) !void {
         if (status) |str| {
-          try Error.check(Api.ort.EnableProfiling.?(@ptrCast(self), str.ptr));
+          try Error.check(Api.ort.EnableProfiling.?(@ptrCast(self), str));
         } else {
           try Error.check(Api.ort.DisableProfiling.?(@ptrCast(self)));
         }
@@ -4752,8 +4753,8 @@ pub const Session = struct {
       pub fn addExternalInitializersFromFilesInMemory(
         self: *@This(),
         names: []const Utils.Path,
-        buffers: []const [*]const u8,
-        lengths: []const [*]u8,
+        buffers: []const [*]u8,
+        lengths: []const usize,
       ) !void {
         std.debug.assert(names.len == buffers.len);
         std.debug.assert(buffers.len == lengths.len);
@@ -5044,7 +5045,7 @@ pub const Session = struct {
   }
 
   /// Run the model asynchronously
-  /// callback_ctx has a function `callback(ctx: *@TypeOf(callback_ctx), []*const Value, *Error.Status)`
+  /// callback_ctx has a function `callback(ctx: *@TypeOf(callback_ctx), []?*Value, *Error.Status)`
   pub fn runAsync(
     self: *@This(),
     run_options: ?*const RunOptions,
@@ -5067,7 +5068,7 @@ pub const Session = struct {
         output_names.len,
         @ptrCast(outputs.ptr),
         &struct {pub fn callback(ctx: ?*anyopaque, vptr: [*c]?*Api.c.OrtValue, vlen: usize, status: Api.c.OrtStatusPtr) callconv(.c) void {
-          @as(@TypeOf(callback_ctx_ptr), @alignCast(@ptrCast(ctx))).callback(@as([*]Value, @ptrCast(vptr))[0 .. vlen], @as(*Error.Status, @ptrCast(status)));
+          @as(@TypeOf(callback_ctx_ptr), @alignCast(@ptrCast(ctx))).callback(@as([*]?*Value, @ptrCast(vptr))[0 .. vlen], @as(*Error.Status, @ptrCast(status)));
         }}.callback,
         @ptrCast(callback_ctx_ptr),
     ));
@@ -5240,7 +5241,15 @@ pub const IoBinding = opaque {
     try Error.check(Api.ort.BindOutputToDevice.?(@ptrCast(self), name, @ptrCast(mem_info)));
   }
 
-  pub fn getBoundOutputNames(self: *const @This(), allocator: *Allocator) !struct { names: [*]u8, lengths: []usize } {
+  pub fn getBoundOutputNames(self: *const @This(), allocator: *Allocator) !struct {
+    names: [*]u8,
+    lengths: []usize,
+
+    pub fn deinit(self_: *@This(), allocator_: *Allocator) void {
+      allocator_.free(self_.names);
+      allocator_.free(self_.lengths);
+    }
+  } {
     var buffer: ?[*]u8 = null;
     var lengths_ptr: ?[*]usize = null;
     var count: usize = 0;
@@ -5775,17 +5784,15 @@ pub const Op = opaque {
         }
 
         fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel_out: ?*?*anyopaque) callconv(.c) ?*Api.c.OrtStatus {
-          const res = getSelf(op).createKernelV2(api.?, @ptrCast(info.?)) catch |err| {
+          const res = getSelf(op).createKernelV2(api.?, @ptrCast(info.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           kernel_out.?.* = res;
           return null;
         }
 
         fn inferShape(op: ?*const Api.c.OrtCustomOp, ctx: ?*Api.c.OrtShapeInferContext) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(op).inferOutputShape(@ptrCast(ctx.?)) catch |err| {
+          getSelf(op).inferOutputShape(@ptrCast(ctx.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
@@ -5808,9 +5815,8 @@ pub const Op = opaque {
         }
 
         fn kernelComputeV2(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Api.c.OrtStatus {
-          T.computeV2(kernel_state, @ptrCast(context.?)) catch |err| {
+          T.computeV2(kernel_state, @ptrCast(context.?)) catch |err|
             return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          };
           return null;
         }
 
