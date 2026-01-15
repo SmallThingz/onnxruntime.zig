@@ -64,8 +64,8 @@ pub const Utils = struct {
         return retval;
       }
 
-      pub fn keys(self: *const @This()) [*]const [*:0] const u8 { return @ptrCast(&self._keys); }
-      pub fn vals(self: *const @This()) [*]const V { return @ptrCast(&self._vals); }
+      pub fn keys(self: *const @This()) [*]const [*:0] const u8 { return (&self._keys).ptr; }
+      pub fn vals(self: *const @This()) [*]const V { return (&self._vals).ptr; }
     };
   }
 
@@ -89,7 +89,27 @@ pub const Utils = struct {
       },
     });
   }
+
+  pub fn ApiCast(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+      .pointer => |pi| switch (@typeInfo(pi.child)) {
+        .@"opaque", .@"struct", .@"enum" => CopyPointerAttrs(T, pi.size, pi.child.Underlying),
+      },
+      .optional => |oi| switch (@typeInfo(oi.child)) {
+        .@"struct" => ?oi.child.Underlying,
+        .pointer => |pi| ApiCast(pi.child),
+        else => unreachable,
+      },
+      else => unreachable,
+    };
+  }
+
+  pub fn apiCast(anyptr: anytype) ApiCast(@TypeOf(anyptr)) {
+    return @ptrCast(anyptr);
+  }
 };
+
+const apiCast = Api.apiCast;
 
 /// This is usually used by vendors
 pub const Ep = struct {
@@ -99,27 +119,28 @@ pub const Ep = struct {
 
   /// The Wrapper for OrtEp Struct
   pub const Interface = struct {
-    underlying: Api.c.OrtEp,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+    pub const Underlying = Api.c.OrtEp;
+    underlying: Underlying,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
     // Call the underlying vtable
     pub fn getName(self: *const @This()) [*:0]const u8 {
-      return self.underlying.GetName.?(@ptrCast(self));
+      return self.underlying.GetName.?(apiCast(self));
     }
 
     // Call the underlying vtable
     pub fn setDynamicOptions(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
       if (self.underlying.SetDynamicOptions) |f| {
-        try Error.check(f(@ptrCast(self), @ptrCast(keys.ptr), @ptrCast(values.ptr), keys.len));
+        try Error.check(f(apiCast(self), apiCast(keys.ptr), apiCast(values.ptr), keys.len));
       }
     }
 
     // Call the underlying vtable
     pub fn getCompiledModelCompatibilityInfo(self: *@This(), graph: *const Graph) [*:0]const u8 {
-      return self.underlying.GetCompiledModelCompatibilityInfo.?(@ptrCast(self), @ptrCast(graph));
+      return self.underlying.GetCompiledModelCompatibilityInfo.?(apiCast(self), apiCast(graph));
     }
 
-    pub const DataLayout = enum(c_uint) {
+    pub const DataLayout = enum(Api.c.OrtEpDataLayout) {
       NCHW = @bitCast(Api.c.OrtEpDataLayout_NCHW),
       NHWC = @bitCast(Api.c.OrtEpDataLayout_NHWC),
     };
@@ -145,7 +166,7 @@ pub const Ep = struct {
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(ptr: ?*const Api.c.OrtEp) *T {
-          return @fieldParentPtr("ep", @as(*Ep, @constCast(@ptrCast(ptr.?))));
+          return @fieldParentPtr("ep", @as(*Ep, @constCast(apiCast(ptr.?))));
         }
 
         fn getName(ptr: ?*const Api.c.OrtEp) callconv(.c) [*:0]const u8 {
@@ -153,8 +174,8 @@ pub const Ep = struct {
         }
 
         fn getCapability(ptr: ?*Api.c.OrtEp, graph: ?*const Api.c.OrtGraph, info: ?*Api.c.OrtEpGraphSupportInfo) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).getCapability(@ptrCast(graph.?), @ptrCast(info.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          getSelf(ptr).getCapability(apiCast(graph.?), apiCast(info.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
@@ -166,23 +187,23 @@ pub const Ep = struct {
           infos_out: [*c]?*Api.c.OrtNodeComputeInfo,
           context_nodes_out: [*c]?*Api.c.OrtNode,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const g_slice = @as([*]const *const Graph, @ptrCast(graphs))[0..count];
-          const f_slice = @as([*]const *const Node, @ptrCast(fused))[0..count];
-          const i_slice = @as([*]*NodeCompute.Info, @ptrCast(infos_out))[0..count];
-          const c_slice = @as([*]*Node, @ptrCast(context_nodes_out))[0..count];
+          const g_slice = @as([*]const *const Graph, apiCast(graphs))[0..count];
+          const f_slice = @as([*]const *const Node, apiCast(fused))[0..count];
+          const i_slice = @as([*]*NodeCompute.Info, apiCast(infos_out))[0..count];
+          const c_slice = @as([*]*Node, apiCast(context_nodes_out))[0..count];
 
           getSelf(ptr).compile(g_slice, f_slice, i_slice, c_slice) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn releaseNodeComputeInfos(ptr: ?*Api.c.OrtEp, infos: [*c]?*Api.c.OrtNodeComputeInfo, count: usize) callconv(.c) void {
-          getSelf(ptr).releaseNodeComputeInfos(@as([*]*NodeCompute.Info, @ptrCast(infos))[0..count]);
+          getSelf(ptr).releaseNodeComputeInfos(@as([*]*NodeCompute.Info, apiCast(infos))[0..count]);
         }
 
         fn getPreferredDataLayout(ptr: ?*Api.c.OrtEp, layout_out: ?*Api.c.OrtEpDataLayout) callconv(.c) ?*Api.c.OrtStatus {
           const layout = getSelf(ptr).getPreferredDataLayout() catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           layout_out.?.* = @intFromEnum(layout);
           return null;
         }
@@ -194,38 +215,38 @@ pub const Ep = struct {
 
         fn setDynamicOptions(ptr: ?*Api.c.OrtEp, keys: [*c]const [*:0]const u8, vals: [*c]const [*:0]const u8, count: usize) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(ptr).setDynamicOptions(keys[0..count], vals[0..count]) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn onRunStart(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).onRunStart(@ptrCast(options.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          getSelf(ptr).onRunStart(apiCast(options.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn onRunEnd(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions, sync: bool) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).onRunEnd(@ptrCast(options.?), sync) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          getSelf(ptr).onRunEnd(apiCast(options.?), sync) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn createAllocator(ptr: ?*Api.c.OrtEp, info: ?*const Api.c.OrtMemoryInfo, out: ?*?*Api.c.OrtAllocator) callconv(.c) ?*Api.c.OrtStatus {
-          const alloc = getSelf(ptr).createAllocator(@ptrCast(info.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          out.?.* = @ptrCast(alloc);
+          const alloc = getSelf(ptr).createAllocator(apiCast(info.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          out.?.* = apiCast(alloc);
           return null;
         }
 
         fn createSyncStreamForDevice(ptr: ?*Api.c.OrtEp, dev: ?*const Api.c.OrtMemoryDevice, out: ?*?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          const stream = getSelf(ptr).createSyncStreamForDevice(@ptrCast(dev.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          out.?.* = @ptrCast(stream);
+          const stream = getSelf(ptr).createSyncStreamForDevice(apiCast(dev.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          out.?.* = apiCast(stream);
           return null;
         }
 
         fn getCompiledModelCompatibilityInfo(ptr: ?*Api.c.OrtEp, graph: ?*const Api.c.OrtGraph) callconv(.c) [*:0]const u8 {
-          return getSelf(ptr).getCompiledModelCompatibilityInfo(@ptrCast(graph.?));
+          return getSelf(ptr).getCompiledModelCompatibilityInfo(apiCast(graph.?));
         }
       };
 
@@ -251,14 +272,15 @@ pub const Ep = struct {
 
   /// Struct that an EP implements for IDataTransfer to copy between devices it uses and CPU
   pub const DataTransfer = struct {
-    underlying: Api.c.OrtDataTransferImpl,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+    pub const Underlying = Api.c.OrtDataTransferImpl;
+    underlying: Underlying,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
     /// Check if the implementation can copy between the source and destination memory devices.
     /// returns true if the implementation can copy between the devices.
     /// since Version 1.23.
     pub fn canCopy(self: *const @This(), src: *const Allocator.MemoryDevice, dst: *const Allocator.MemoryDevice) bool {
-      return self.underlying.CanCopy.?(@ptrCast(self), @ptrCast(src), @ptrCast(dst));
+      return self.underlying.CanCopy.?(apiCast(self), apiCast(src), apiCast(dst));
     }
 
     /// Copy tensors from src_tensors to dst_tensors using the provided streams.
@@ -273,10 +295,10 @@ pub const Ep = struct {
       std.debug.assert(src.len == dst.len);
       if (streams) |s| std.debug.assert(src.len == s.len);
       try Error.check(self.underlying.CopyTensors.?(
-          @ptrCast(self),
-          @ptrCast(src.ptr),
-          @ptrCast(dst.ptr),
-          @ptrCast(if (streams) |s| s.ptr else null),
+          apiCast(self),
+          apiCast(src.ptr),
+          apiCast(dst.ptr),
+          apiCast(if (streams) |s| s.ptr else null),
           src.len,
       ));
     }
@@ -288,7 +310,7 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn deinit(self: *@This()) void {
-      return self.underlying.Release.?(@ptrCast(self));
+      return self.underlying.Release.?(apiCast(self));
     }
 
     /// Initialize the DataTransfer structure with vtables pointing to the provided Implementer type.
@@ -301,7 +323,7 @@ pub const Ep = struct {
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(self: ?*Api.c.OrtDataTransferImpl) *T {
-          return @fieldParentPtr("data_transfer", @as(@FieldType(T, "data_transfer"), @alignCast(@ptrCast(self))));
+          return @fieldParentPtr("data_transfer", @as(@FieldType(T, "data_transfer"), @alignCast(apiCast(self))));
         }
 
         fn release(self: ?*Api.c.OrtDataTransferImpl) callconv(.c) void {
@@ -313,7 +335,7 @@ pub const Ep = struct {
           src: ?*const Api.c.OrtMemoryDevice,
           dst: ?*const Api.c.OrtMemoryDevice,
         ) callconv(.c) bool {
-          return getSelf(self).canCopy(@as(*const Allocator.MemoryDevice, @ptrCast(src.?)), @as(*const Allocator.MemoryDevice, @ptrCast(dst.?)));
+          return getSelf(self).canCopy(@as(*const Allocator.MemoryDevice, apiCast(src.?)), @as(*const Allocator.MemoryDevice, apiCast(dst.?)));
         }
 
         fn copyTensors(
@@ -323,12 +345,12 @@ pub const Ep = struct {
           streams: [*c]?*Api.c.OrtSyncStream,
           num: usize,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const src_zig = @as([*]const *const Value, @ptrCast(src))[0..num];
-          const dst_zig = @as([*]*Value, @ptrCast(dst))[0..num];
-          const streams_zig: ?[]*SyncStream = if (streams != null) @as([*]*SyncStream, @ptrCast(streams))[0..num] else null;
+          const src_zig = @as([*]const *const Value, apiCast(src))[0..num];
+          const dst_zig = @as([*]*Value, apiCast(dst))[0..num];
+          const streams_zig: ?[]*SyncStream = if (streams != null) @as([*]*SyncStream, apiCast(streams))[0..num] else null;
 
           getSelf(self).copyTensors(src_zig, dst_zig, streams_zig) catch |err| 
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
       };
@@ -346,14 +368,15 @@ pub const Ep = struct {
 
   /// Struct that an EP implements for Stream Notifications.
   pub const SyncNotificationImpl = struct {
-    underlying: Api.c.OrtSyncNotificationImpl,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+    pub const Underlying = Api.c.OrtSyncNotificationImpl;
+    underlying: Underlying,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
     /// Called by ORT to activate the notification.
     ///
     /// since Version 1.23.
     pub fn activate(self: *@This()) !void {
-      try Error.check(self.underlying.Activate.?(@ptrCast(self)));
+      try Error.check(self.underlying.Activate.?(apiCast(self)));
     }
 
     /// Wait for a device to device operation to complete.
@@ -363,14 +386,14 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn waitOnDevice(self: *@This(), stream: *SyncStream) !void {
-      try Error.check(self.underlying.WaitOnDevice.?(@ptrCast(self), @ptrCast(stream)));
+      try Error.check(self.underlying.WaitOnDevice.?(apiCast(self), apiCast(stream)));
     }
 
     /// Wait for a device to host operation to complete.
     ///
     /// since Version 1.23.
     pub fn waitOnHost(self: *@This()) !void {
-      try Error.check(self.underlying.WaitOnHost.?(@ptrCast(self)));
+      try Error.check(self.underlying.WaitOnHost.?(apiCast(self)));
     }
 
     /// Release the OrtSyncNotificationImpl instance.
@@ -380,7 +403,7 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn deinit(self: *@This()) void {
-      self.underlying.Release.?(@ptrCast(self));
+      self.underlying.Release.?(apiCast(self));
     }
 
     /// Initialize the SyncNotification structure with vtables pointing to the provided Implementer type.
@@ -394,7 +417,7 @@ pub const Ep = struct {
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(self: ?*Api.c.OrtSyncNotificationImpl) *T {
-          return @fieldParentPtr("sync_notification", @as(*SyncNotificationImpl, @ptrCast(self.?)));
+          return @fieldParentPtr("sync_notification", @as(*SyncNotificationImpl, apiCast(self.?)));
         }
 
         fn release(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) void {
@@ -403,19 +426,19 @@ pub const Ep = struct {
 
         fn activate(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).activate() catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn waitOnDevice(self: ?*Api.c.OrtSyncNotificationImpl, stream: ?*Api.c.OrtSyncStream) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(self).waitOnDevice(@as(*SyncStream, @ptrCast(stream.?))) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          getSelf(self).waitOnDevice(@as(*SyncStream, apiCast(stream.?))) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn waitOnHost(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).waitOnHost() catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
       };
@@ -437,8 +460,9 @@ pub const Ep = struct {
   ///
   /// since Version 1.23.
   pub const SyncStreamImpl = struct {
-    underlying: Api.c.OrtSyncStreamImpl,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+    pub const Underlying = Api.c.OrtSyncStreamImpl;
+    underlying: Underlying,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
     ///Get the handle of the stream.
     ///
@@ -446,7 +470,7 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn handle(self: *@This()) *anyopaque {
-      return self.underlying.GetHandle.?(@ptrCast(self)).?;
+      return self.underlying.GetHandle.?(apiCast(self)).?;
     }
 
     /// Create an OrtSyncNotificationImpl for the OrtSyncStreamImpl instance.
@@ -454,7 +478,7 @@ pub const Ep = struct {
     /// since Version 1.23.
     pub fn createNotification(self: *@This()) !*SyncNotificationImpl {
       var out: ?*SyncNotificationImpl = null;
-      try Error.check(self.underlying.CreateNotification.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(self.underlying.CreateNotification.?(apiCast(self), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -465,7 +489,7 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn endSessionRun(self: *@This()) !void {
-      try Error.check(self.underlying.OnSessionRunEnd.?(@ptrCast(self)));
+      try Error.check(self.underlying.OnSessionRunEnd.?(apiCast(self)));
     }
 
     /// Flush the stream.
@@ -474,7 +498,7 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn flush(self: *@This()) !void {
-      try Error.check(self.underlying.Flush.?(@ptrCast(self)));
+      try Error.check(self.underlying.Flush.?(apiCast(self)));
     }
 
     /// Release the OrtSyncStreamImpl instance.
@@ -484,7 +508,7 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn deinit(self: *@This()) void {
-      self.underlying.Release.?(@ptrCast(self));
+      self.underlying.Release.?(apiCast(self));
     }
 
     /// Requirements for Implementer:
@@ -496,7 +520,7 @@ pub const Ep = struct {
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(self: ?*Api.c.OrtSyncStreamImpl) *T {
-          return @fieldParentPtr("sync_stream", @as(*SyncStreamImpl, @ptrCast(self.?)));
+          return @fieldParentPtr("sync_stream", @as(*SyncStreamImpl, apiCast(self.?)));
         }
 
         fn release(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) void {
@@ -508,20 +532,20 @@ pub const Ep = struct {
         }
 
         fn createNotification(self: ?*Api.c.OrtSyncStreamImpl, out: ?*?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(self).createNotification(@as(*?*SyncNotificationImpl, @ptrCast(out.?))) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          getSelf(self).createNotification(@as(*?*SyncNotificationImpl, apiCast(out.?))) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn flush(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).flush() catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn onSessionRunEnd(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).onSessionRunEnd() catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
       };
@@ -546,6 +570,7 @@ pub const Ep = struct {
     pub const State = opaque {};
 
     pub const Context = opaque {
+      pub const Underlying = Api.c.OrtNodeComputeContext;
       /// Query a OrtNodeComputeContext for the name of the node that encapsulates the compiled/fused node.
       ///
       /// Used in OrtNodeComputeInfo::CreateComputeState().
@@ -557,15 +582,16 @@ pub const Ep = struct {
       ///
       /// since Version 1.23.
       pub fn name(self: *const @This()) [*:0]const u8 {
-        return api.underlying.NodeComputeContext_NodeName.?(@ptrCast(self));
+        return api.underlying.NodeComputeContext_NodeName.?(apiCast(self));
       }
     };
 
     /// The OrtNodeComputeInfo struct provides functions that an OrtEp implements to specify the compute function for a compiled OrtGraph instance.
     /// since Version 1.23.
     pub const Info = struct {
-      underlying: Api.c.OrtNodeComputeInfo,
-      comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+      pub const Underlying = Api.c.OrtNodeComputeInfo;
+      underlying: Underlying,
+      comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
       /// Creates an opaque compute state object that is then passed to the Compute() function during inference.
       /// compute_context OrtNodeComputeContext instance that contains compiled/fused node's name and host
@@ -576,7 +602,7 @@ pub const Ep = struct {
       /// since Version 1.23.
       pub fn createState(self: *@This(), context: *Context) !*State {
         var out: ?*State = null;
-        try Error.check(self.underlying.CreateState.?(@ptrCast(self), @ptrCast(context), @ptrCast(&out)));
+        try Error.check(self.underlying.CreateState.?(apiCast(self), apiCast(context), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
@@ -587,7 +613,7 @@ pub const Ep = struct {
       ///
       /// since Version 1.23.
       pub fn compute(self: *@This(), state: *State, kernel_context: *KernelContext) !void {
-        try Error.check(self.underlying.Compute.?(@ptrCast(self), @ptrCast(state), @ptrCast(kernel_context)));
+        try Error.check(self.underlying.Compute.?(apiCast(self), apiCast(state), apiCast(kernel_context)));
       }
 
       /// Releases the compute state returned by CreateState().
@@ -596,7 +622,7 @@ pub const Ep = struct {
       ///
       /// since Version 1.23.
       pub fn releaseState(self: *@This(), state: *State) void {
-        self.underlying.ReleaseState.?(@ptrCast(self), @ptrCast(state));
+        self.underlying.ReleaseState.?(apiCast(self), apiCast(state));
       }
 
       /// Initialize the NodeCompute.Info structure with vtables pointing to the provided Implementer type.
@@ -609,7 +635,7 @@ pub const Ep = struct {
       pub fn init(comptime T: type) @This() {
         const VTable = struct {
           fn getSelf(self: ?*Api.c.OrtNodeComputeInfo) *T {
-            return @fieldParentPtr("compute_info", @as(*Info, @ptrCast(self.?)));
+            return @fieldParentPtr("compute_info", @as(*Info, apiCast(self.?)));
           }
 
           fn createState(
@@ -617,9 +643,9 @@ pub const Ep = struct {
             ctx: ?*Api.c.OrtNodeComputeContext,
             state_out: ?*?*anyopaque,
           ) callconv(.c) ?*Api.c.OrtStatus {
-            const result = getSelf(self).createState(@ptrCast(ctx.?)) catch |err|
-              return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-            state_out.?.* = @ptrCast(result);
+            const result = getSelf(self).createState(apiCast(ctx.?)) catch |err|
+              return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            state_out.?.* = apiCast(result);
             return null;
           }
 
@@ -628,13 +654,13 @@ pub const Ep = struct {
             state: ?*anyopaque,
             kernel_ctx: ?*Api.c.OrtKernelContext,
           ) callconv(.c) ?*Api.c.OrtStatus {
-            getSelf(self).compute(@ptrCast(state.?), @ptrCast(kernel_ctx.?)) catch |err|
-              return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            getSelf(self).compute(apiCast(state.?), apiCast(kernel_ctx.?)) catch |err|
+              return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
             return null;
           }
 
           fn releaseState(self: ?*Api.c.OrtNodeComputeInfo, state: ?*anyopaque) callconv(.c) void {
-            getSelf(self).releaseState(@ptrCast(state.?));
+            getSelf(self).releaseState(apiCast(state.?));
           }
         };
 
@@ -654,6 +680,7 @@ pub const Ep = struct {
   /// This is passed to the EP's GetCapability function.
   /// Wraps OrtEpGraphSupportInfo.
   pub const GraphSupportInfo = opaque {
+    pub const Underlying = Api.c.OrtEpGraphSupportInfo;
     /// Specify nodes that are supported by an OrtEp and should be fused into one node.
     ///
     /// Because the nodes will be fused into one "fused node", there must not exist an unsupported node in
@@ -674,10 +701,10 @@ pub const Ep = struct {
       options: ?*const NodeFusionOptions,
     ) !void {
       try Error.check(api.underlying.EpGraphSupportInfo_AddNodesToFuse.?(
-          @ptrCast(self),
-          @ptrCast(nodes.ptr),
+          apiCast(self),
+          apiCast(nodes.ptr),
           nodes.len,
-          @ptrCast(options),
+          apiCast(options),
       ));
     }
 
@@ -689,8 +716,8 @@ pub const Ep = struct {
     /// since Version 1.23.
     pub fn addSingleNode(self: *@This(), node: *const Node) !void {
       try Error.check(api.underlying.EpGraphSupportInfo_AddSingleNode.?(
-          @ptrCast(self),
-          @ptrCast(node),
+          apiCast(self),
+          apiCast(node),
       ));
     }
   };
@@ -699,6 +726,7 @@ pub const Ep = struct {
   /// Represents an instance of an Execution Provider mapped to a specific hardware device.
   /// Wraps OrtEpDevice.
   pub const Device = opaque {
+    pub const Underlying = Api.c.OrtEpDevice;
     /// Create an OrtEpDevice for the EP and an OrtHardwareDevice.
     /// ep_factory Execution provider factory that is creating the instance.
     /// hardware_device Hardware device that the EP can utilize.
@@ -719,11 +747,11 @@ pub const Ep = struct {
     ) !*@This() {
       var out: ?*@This() = null;
       try Error.check(api.underlying.CreateEpDevice.?(
-          @ptrCast(factory),
-          @ptrCast(hw_device),
-          @ptrCast(ep_metadata),
-          @ptrCast(ep_options),
-          @ptrCast(&out)
+          apiCast(factory),
+          apiCast(hw_device),
+          apiCast(ep_metadata),
+          apiCast(ep_options),
+          apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -731,42 +759,42 @@ pub const Ep = struct {
     /// Returns the name of the execution provider (e.g., "CUDA", "CPU").
     /// Wraps OrtApi::EpDevice_EpName
     pub fn getEpName(self: *const @This()) [*:0]const u8 {
-      return @ptrCast(Api.ort.EpDevice_EpName.?(@ptrCast(self)));
+      return apiCast(Api.ort.EpDevice_EpName.?(apiCast(self)));
     }
 
     /// Returns the name of the execution provider's vendor.
     /// Wraps OrtApi::EpDevice_EpVendor
     pub fn getEpVendor(self: *const @This()) [*:0]const u8 {
-      return @ptrCast(Api.ort.EpDevice_EpVendor.?(@ptrCast(self)));
+      return apiCast(Api.ort.EpDevice_EpVendor.?(apiCast(self)));
     }
 
     /// Returns an OrtKeyValuePairs instance containing the metadata for the EP device.
     /// Note: ORT owns this instance; do NOT call deinit on it.
     /// Wraps OrtApi::EpDevice_EpMetadata
     pub fn getEpMetadata(self: *const @This()) *const KeyValuePairs {
-      return @ptrCast(Api.ort.EpDevice_EpMetadata.?(@ptrCast(self)));
+      return apiCast(Api.ort.EpDevice_EpMetadata.?(apiCast(self)));
     }
 
     /// Returns an OrtKeyValuePairs instance containing the options for the EP device.
     /// Note: ORT owns this instance; do NOT call deinit on it.
     /// Wraps OrtApi::EpDevice_EpOptions
     pub fn getEpOptions(self: *const @This()) *const KeyValuePairs {
-      return @ptrCast(Api.ort.EpDevice_EpOptions.?(@ptrCast(self)));
+      return apiCast(Api.ort.EpDevice_EpOptions.?(apiCast(self)));
     }
 
     /// Returns the underlying HardwareDevice (physical CPU/GPU/NPU) instance for this EP device.
     /// Note: ORT owns this instance.
     /// Wraps OrtApi::EpDevice_Device
     pub fn getHardwareDevice(self: *const @This()) *const HardwareDevice {
-      return @ptrCast(Api.ort.EpDevice_Device.?(@ptrCast(self)));
+      return apiCast(Api.ort.EpDevice_Device.?(apiCast(self)));
     }
 
     /// Get the OrtMemoryInfo for the device.
     /// If memory_type is DEFAULT and null is returned, the EP uses CPU memory.
     /// Wraps OrtApi::EpDevice_MemoryInfo
     pub fn getMemoryInfo(self: *const @This(), mem_type: Allocator.DeviceMemoryType) ?*const Allocator.MemoryInfo {
-      const ptr = Api.ort.EpDevice_MemoryInfo.?(@ptrCast(self), @intFromEnum(mem_type));
-      return @ptrCast(ptr);
+      const ptr = Api.ort.EpDevice_MemoryInfo.?(apiCast(self), @intFromEnum(mem_type));
+      return apiCast(ptr);
     }
 
     /// Register an allocator with the OrtEpDevice.
@@ -789,32 +817,33 @@ pub const Ep = struct {
     ///
     /// since Version 1.23.
     pub fn addAllocatorInfo(self: *@This(), info: *const Allocator.MemoryInfo) !void {
-      try Error.check(api.underlying.EpDevice_AddAllocatorInfo.?(@ptrCast(self), @ptrCast(info)));
+      try Error.check(api.underlying.EpDevice_AddAllocatorInfo.?(apiCast(self), apiCast(info)));
     }
 
     /// Releases the EpDevice instance. 
     /// Use only if you manually created the device via CreateEpDevice.
     /// Devices from Api.env.getEpDevices() are managed by the environment.
     pub fn deinit(self: *@This()) void {
-      api.underlying.ReleaseEpDevice.?(@ptrCast(self));
+      api.underlying.ReleaseEpDevice.?(apiCast(self));
     }
   };
 
   pub const Factory = struct {
-    underlying: Api.c.OrtEpFactory,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+    pub const Underlying = Api.c.OrtEpFactory;
+    underlying: Underlying,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
     pub fn getName(self: *const @This()) [*:0]const u8 {
-      return self.underlying.GetName.?(@ptrCast(self));
+      return self.underlying.GetName.?(apiCast(self));
     }
 
     pub fn getVersion(self: *const @This()) [*:0]const u8 {
-      return self.underlying.GetVersion.?(@ptrCast(self));
+      return self.underlying.GetVersion.?(apiCast(self));
     }
 
     pub fn validateCompatibility(self: *@This(), devices: []const *const HardwareDevice, info: [*:0]const u8) !Api.compiler.CompiledModelCompatibility {
       var out: Api.compiler.CompiledModelCompatibility = undefined;
-      try Error.check(self.underlying.ValidateCompiledModelCompatibilityInfo.?(@ptrCast(self), @ptrCast(devices.ptr), devices.len, info, @ptrCast(&out)));
+      try Error.check(self.underlying.ValidateCompiledModelCompatibilityInfo.?(apiCast(self), apiCast(devices.ptr), devices.len, info, apiCast(&out)));
       return out;
     }
 
@@ -840,7 +869,7 @@ pub const Ep = struct {
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(ptr: ?*const Api.c.OrtEpFactory) *T {
-          return @fieldParentPtr("factory", @as(*Factory, @constCast(@ptrCast(ptr.?))));
+          return @fieldParentPtr("factory", @as(*Factory, @constCast(apiCast(ptr.?))));
         }
 
         fn getName(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) [*:0]const u8 {
@@ -859,11 +888,11 @@ pub const Ep = struct {
           max_ep_devices: usize,
           num_ep_devices_out: ?*usize,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const dev_slice = @as([*]const *const HardwareDevice, @ptrCast(devices))[0..num_devices];
-          const ep_out_slice = @as([*]*Ep.Device, @ptrCast(ep_devices_out))[0..max_ep_devices];
+          const dev_slice = @as([*]const *const HardwareDevice, apiCast(devices))[0..num_devices];
+          const ep_out_slice = @as([*]*Ep.Device, apiCast(ep_devices_out))[0..max_ep_devices];
 
           const count = getSelf(ptr).getSupportedDevices(dev_slice, ep_out_slice) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           num_ep_devices_out.?.* = count;
           return null;
         }
@@ -877,17 +906,17 @@ pub const Ep = struct {
           logger: ?*const Api.c.OrtLogger,
           ep_out: ?*?*Api.c.OrtEp,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const dev_slice = @as([*]const *const HardwareDevice, @ptrCast(devices))[0..num_devices];
-          const meta_slice = @as([*]const *const KeyValuePairs, @ptrCast(metadata))[0..num_devices];
+          const dev_slice = @as([*]const *const HardwareDevice, apiCast(devices))[0..num_devices];
+          const meta_slice = @as([*]const *const KeyValuePairs, apiCast(metadata))[0..num_devices];
 
-          const ep = getSelf(ptr).createEp(dev_slice, meta_slice, @ptrCast(options.?), @ptrCast(logger.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          ep_out.?.* = @ptrCast(ep);
+          const ep = getSelf(ptr).createEp(dev_slice, meta_slice, apiCast(options.?), apiCast(logger.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          ep_out.?.* = apiCast(ep);
           return null;
         }
 
         fn releaseEp(ptr: ?*Api.c.OrtEpFactory, ep: ?*Api.c.OrtEp) callconv(.c) void {
-          getSelf(ptr).releaseEp(@ptrCast(ep.?));
+          getSelf(ptr).releaseEp(apiCast(ep.?));
         }
 
         fn getVendorId(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) u32 {
@@ -905,7 +934,7 @@ pub const Ep = struct {
           info: [*:0]const u8,
           out: ?*Api.c.OrtCompiledModelCompatibility,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const dev_slice = @as([*]const *const HardwareDevice, @ptrCast(devices))[0..num_devices];
+          const dev_slice = @as([*]const *const HardwareDevice, apiCast(devices))[0..num_devices];
           out.?.* = getSelf(ptr).validateCompiledModelCompatibilityInfo(dev_slice, info);
           return null;
         }
@@ -916,20 +945,20 @@ pub const Ep = struct {
           opts: ?*const Api.c.OrtKeyValuePairs,
           out: ?*?*Api.c.OrtAllocator,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const alloc = getSelf(ptr).createAllocator(@ptrCast(info), @ptrCast(opts)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          out.?.* = @ptrCast(alloc);
+          const alloc = getSelf(ptr).createAllocator(apiCast(info), apiCast(opts)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          out.?.* = apiCast(alloc);
           return null;
         }
 
         fn releaseAllocator(ptr: ?*Api.c.OrtEpFactory, alloc: ?*Api.c.OrtAllocator) callconv(.c) void {
-          getSelf(ptr).releaseAllocator(@ptrCast(alloc.?));
+          getSelf(ptr).releaseAllocator(apiCast(alloc.?));
         }
 
         fn createDataTransfer(ptr: ?*Api.c.OrtEpFactory, out: ?*?*Api.c.OrtDataTransferImpl) callconv(.c) ?*Api.c.OrtStatus {
           const dt = getSelf(ptr).createDataTransfer() catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          out.?.* = @ptrCast(dt);
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          out.?.* = apiCast(dt);
           return null;
         }
 
@@ -943,9 +972,9 @@ pub const Ep = struct {
           opts: ?*const Api.c.OrtKeyValuePairs,
           out: ?*?*Api.c.OrtSyncStreamImpl,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const stream = getSelf(ptr).createSyncStreamForDevice(@ptrCast(dev.?), @ptrCast(opts)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
-          out.?.* = @ptrCast(stream);
+          const stream = getSelf(ptr).createSyncStreamForDevice(apiCast(dev.?), apiCast(opts)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          out.?.* = apiCast(stream);
           return null;
         }
       };
@@ -975,7 +1004,6 @@ pub const Ep = struct {
 pub const Training = struct {
   pub const api = struct {
     pub var underlying: *const Api.c.OrtTrainingApi = undefined;
-
     
     /// Sets the seed used for random number generation in Onnxruntime.
     ///
@@ -987,6 +1015,7 @@ pub const Training = struct {
   };
 
   pub const CheckpointState = opaque {
+    pub const Underlying = Api.c.OrtCheckpointState;
     /// Load a checkpoint state from a file on disk into checkpoint_state.
     ///
     /// This function will parse a checkpoint file, pull relevant data and load the training
@@ -1002,7 +1031,7 @@ pub const Training = struct {
     /// checkpoint_state: Checkpoint state that contains the states of the training session.
     pub fn load(path: Utils.Path) !*@This() {
       var out: ?*@This() = null;
-      try Error.check(api.underlying.LoadCheckpoint.?(path, @ptrCast(&out)));
+      try Error.check(api.underlying.LoadCheckpoint.?(path, apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -1010,9 +1039,9 @@ pub const Training = struct {
     pub fn loadFromBuffer(buffer: []const u8) !*@This() {
       var out: ?*@This() = null;
       try Error.check(api.underlying.LoadCheckpointFromBuffer.?(
-        @ptrCast(buffer.ptr), 
+        apiCast(buffer.ptr), 
         buffer.len, 
-        @ptrCast(&out)
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -1028,7 +1057,7 @@ pub const Training = struct {
     /// include_optimizer_state: Flag to indicate whether to save the optimizer state or not.
     pub fn save(self: *@This(), path: Utils.Path, include_optimizer_state: bool) !void {
       try Error.check(api.underlying.SaveCheckpoint.?(
-        @ptrCast(self), 
+        apiCast(self), 
         path, 
         include_optimizer_state
       ));
@@ -1045,7 +1074,7 @@ pub const Training = struct {
     /// property_value Property value associated with the given name.
     pub fn addProperty(self: *@This(), name: [*:0]const u8, prop_type: PropertyType, value: *anyopaque) !void {
       try Error.check(api.underlying.AddProperty.?(
-        @ptrCast(self),
+        apiCast(self),
         name,
         @intFromEnum(prop_type),
         value
@@ -1063,22 +1092,22 @@ pub const Training = struct {
       var out_type: PropertyType = undefined;
       var out_val: ?*anyopaque = null;
       try Error.check(api.underlying.GetProperty.?(
-        @ptrCast(self),
+        apiCast(self),
         name,
-        @ptrCast(allocator),
-        @ptrCast(&out_type),
+        apiCast(allocator),
+        apiCast(&out_type),
         &out_val
       ));
 
       const val = out_val orelse return error.OutOfMemory;
       switch (out_type) {
         // Aligncast is ok since the alignment must match that of the returned type and because anyopaque pointers have no associated alignment
-        inline else => |t| return @unionInit(PropertyUnion, @tagName(t), @alignCast(@ptrCast(val))),
+        inline else => |t| return @unionInit(PropertyUnion, @tagName(t), @alignCast(apiCast(val))),
       }
       unreachable;
     }
 
-    pub const PropertyType = enum(c_uint) {
+    pub const PropertyType = enum(Api.c.OrtPropertyType) {
       i64 = @bitCast(Api.c.OrtIntProperty),
       f32 = @bitCast(Api.c.OrtFloatProperty),
       str = @bitCast(Api.c.OrtStringProperty),
@@ -1091,8 +1120,8 @@ pub const Training = struct {
 
       pub fn deinit(self: @This(), allocator: *Allocator) void {
         const ptr: [*]u8 = switch (self) {
-          .i64 => @ptrCast(self.i64),
-          .f32 => @ptrCast(self.f32),
+          .i64 => apiCast(self.i64),
+          .f32 => apiCast(self.f32),
           .str => self.str,
         };
         allocator.free(ptr);
@@ -1107,7 +1136,7 @@ pub const Training = struct {
     /// parameter_name: Name of the parameter being retrieved.
     pub fn getParameterTypeAndShape(self: *const @This(), name: [*:0]const u8) !*TensorTypeAndShapeInfo.C {
       var out: ?*TensorTypeAndShapeInfo.C = null;
-      try Error.check(api.underlying.GetParameterTypeAndShape.?(@ptrCast(self), name, @ptrCast(&out)));
+      try Error.check(api.underlying.GetParameterTypeAndShape.?(apiCast(self), name, apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -1121,7 +1150,7 @@ pub const Training = struct {
     /// parameter_name: Name of the parameter being updated.
     /// parameter: The parameter data that should replace the existing parameter data.
     pub fn updateParameter(self: *@This(), name: [*:0]const u8, param: *Value) !void {
-      try Error.check(api.underlying.UpdateParameter.?(@ptrCast(self), name, @ptrCast(param)));
+      try Error.check(api.underlying.UpdateParameter.?(apiCast(self), name, apiCast(param)));
     }
 
     /// Gets the data associated with the model parameter from the checkpoint state for the given parameter name.
@@ -1135,16 +1164,17 @@ pub const Training = struct {
     /// allocator: Allocator used to allocate the memory for the parameter.
     pub fn getParameter(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
       var out: ?*Value = null;
-      try Error.check(api.underlying.GetParameter.?(@ptrCast(self), name, @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(api.underlying.GetParameter.?(apiCast(self), name, apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     pub fn deinit(self: *@This()) void {
-      api.underlying.ReleaseCheckpointState.?(@ptrCast(self));
+      api.underlying.ReleaseCheckpointState.?(apiCast(self));
     }
   };
 
   pub const TrainingSession = opaque {
+    pub const Underlying = Api.c.OrtTrainingSession;
     /// Create a training session that can be used to begin or resume training.
     ///
     /// This function creates a training session based on the env and session options provided that can
@@ -1176,12 +1206,12 @@ pub const Training = struct {
       var out: ?*@This() = null;
       try Error.check(api.underlying.CreateTrainingSession.?(
         Api.env.underlying,
-        @ptrCast(options),
-        @ptrCast(checkpoint),
+        apiCast(options),
+        apiCast(checkpoint),
         train_model_path,
         eval_model_path,
         optimizer_model_path,
-        @ptrCast(&out)
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -1204,15 +1234,15 @@ pub const Training = struct {
       var out: ?*@This() = null;
       try Error.check(api.underlying.CreateTrainingSessionFromBuffer.?(
         Api.env.underlying,
-        @ptrCast(options),
-        @ptrCast(checkpoint),
-        @ptrCast(train_model_data.ptr),
+        apiCast(options),
+        apiCast(checkpoint),
+        apiCast(train_model_data.ptr),
         train_model_data.len,
-        @ptrCast(eval_model_data.ptr),
+        apiCast(eval_model_data.ptr),
         eval_model_data.len,
-        @ptrCast(optimizer_model_data.ptr),
+        apiCast(optimizer_model_data.ptr),
         optimizer_model_data.len,
-        @ptrCast(&out)
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -1223,7 +1253,7 @@ pub const Training = struct {
     /// allocate space for the number of outputs when OrtTrainingApi::TrainStep is invoked.
     pub fn getTrainingModelOutputCount(self: *const @This()) !usize {
       var out: usize = 0;
-      try Error.check(api.underlying.TrainingSessionGetTrainingModelOutputCount.?(@ptrCast(self), &out));
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelOutputCount.?(apiCast(self), &out));
       return out;
     }
 
@@ -1233,7 +1263,7 @@ pub const Training = struct {
     /// allocate space for the number of outputs when OrtTrainingApi::EvalStep is invoked.
     pub fn getEvalModelOutputCount(self: *const @This()) !usize {
       var out: usize = 0;
-      try Error.check(api.underlying.TrainingSessionGetEvalModelOutputCount.?(@ptrCast(self), &out));
+      try Error.check(api.underlying.TrainingSessionGetEvalModelOutputCount.?(apiCast(self), &out));
       return out;
     }
 
@@ -1246,7 +1276,7 @@ pub const Training = struct {
     /// allocator: Allocator to use to allocate the memory for the name.
     pub fn getTrainingModelOutputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(api.underlying.TrainingSessionGetTrainingModelOutputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelOutputName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -1259,7 +1289,7 @@ pub const Training = struct {
     /// allocator: Allocator to use to allocate the memory for the name.
     pub fn getEvalModelOutputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(api.underlying.TrainingSessionGetEvalModelOutputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(api.underlying.TrainingSessionGetEvalModelOutputName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -1271,7 +1301,7 @@ pub const Training = struct {
     ///
     /// Reset the gradients of all trainable parameters to zero lazily.
     pub fn lazyResetGrad(self: *@This()) !void {
-      try Error.check(api.underlying.LazyResetGrad.?(@ptrCast(self)));
+      try Error.check(api.underlying.LazyResetGrad.?(apiCast(self)));
     }
 
     ///Computes the outputs of the training model and the gradients of the trainable parameters for the given inputs
@@ -1294,12 +1324,12 @@ pub const Training = struct {
       outputs: []?*Value,
     ) !void {
       try Error.check(api.underlying.TrainStep.?(
-        @ptrCast(self),
-        @ptrCast(run_options),
+        apiCast(self),
+        apiCast(run_options),
         inputs.len,
-        @ptrCast(inputs.ptr),
+        apiCast(inputs.ptr),
         outputs.len,
-        @ptrCast(outputs.ptr),
+        apiCast(outputs.ptr),
       ));
     }
 
@@ -1319,12 +1349,12 @@ pub const Training = struct {
       outputs: []*Value,
     ) !void {
       try Error.check(api.underlying.EvalStep.?(
-        @ptrCast(self),
-        @ptrCast(run_options),
+        apiCast(self),
+        apiCast(run_options),
         inputs.len,
-        @ptrCast(inputs.ptr),
+        apiCast(inputs.ptr),
         outputs.len,
-        @ptrCast(outputs.ptr),
+        apiCast(outputs.ptr),
       ));
     }
 
@@ -1342,7 +1372,7 @@ pub const Training = struct {
     ///
     /// learning_rate: Desired learning rate to be set.
     pub fn setLearningRate(self: *@This(), learning_rate: f32) !void {
-      try Error.check(api.underlying.SetLearningRate.?(@ptrCast(self), learning_rate));
+      try Error.check(api.underlying.SetLearningRate.?(apiCast(self), learning_rate));
     }
 
     /// Gets the current learning rate for this training session.
@@ -1352,7 +1382,7 @@ pub const Training = struct {
     /// of implementing their own learning rate schedulers.
     pub fn getLearningRate(self: *@This()) !f32 {
       var out: f32 = undefined;
-      try Error.check(api.underlying.GetLearningRate.?(@ptrCast(self), &out));
+      try Error.check(api.underlying.GetLearningRate.?(apiCast(self), &out));
       return out;
     }
 
@@ -1366,7 +1396,7 @@ pub const Training = struct {
     ///
     /// run_options: Run options for this optimizer step.
     pub fn optimizerStep(self: *@This(), run_options: ?*const RunOptions) !void {
-      try Error.check(api.underlying.OptimizerStep.?(@ptrCast(self), @ptrCast(run_options)));
+      try Error.check(api.underlying.OptimizerStep.?(apiCast(self), apiCast(run_options)));
     }
 
     /// Registers a linear learning rate scheduler for the training session.
@@ -1381,7 +1411,7 @@ pub const Training = struct {
     /// initial_lr The initial learning rate to be used by the training session.
     pub fn registerLinearLRScheduler(self: *@This(), warmup_step_count: i64, total_step_count: i64, initial_lr: f32) !void {
       try Error.check(api.underlying.RegisterLinearLRScheduler.?(
-        @ptrCast(self),
+        apiCast(self),
         warmup_step_count,
         total_step_count,
         initial_lr
@@ -1395,7 +1425,7 @@ pub const Training = struct {
     /// or as determined necessary to update the learning rate being used by the training session.
     /// Note: Please note that a valid predefined learning rate scheduler must be first registered to invoke this function.
     pub fn schedulerStep(self: *@This()) !void {
-      try Error.check(api.underlying.SchedulerStep.?(@ptrCast(self)));
+      try Error.check(api.underlying.SchedulerStep.?(apiCast(self)));
     }
 
     /// Retrieves the size of all the parameters.
@@ -1406,7 +1436,7 @@ pub const Training = struct {
     /// trainable_only: Whether to skip non-trainable parameters
     pub fn getParametersSize(self: *@This(), trainable_only: bool) !usize {
       var out: usize = undefined;
-      try Error.check(api.underlying.GetParametersSize.?(@ptrCast(self), &out, trainable_only));
+      try Error.check(api.underlying.GetParametersSize.?(apiCast(self), &out, trainable_only));
       return out;
     }
 
@@ -1423,7 +1453,7 @@ pub const Training = struct {
     /// [out] out_buffer The pre-allocated OrtValue buffer to copy onto.
     /// trainable_only Whether to skip non-trainable parameters
     pub fn copyParametersToBuffer(self: *@This(), out_buffer: *Value, trainable_only: bool) !void {
-      try Error.check(api.underlying.CopyParametersToBuffer.?(@ptrCast(self), @ptrCast(out_buffer), trainable_only));
+      try Error.check(api.underlying.CopyParametersToBuffer.?(apiCast(self), apiCast(out_buffer), trainable_only));
     }
 
     /// Copy parameter values from the given contiguous buffer held by parameters_buffer to the training state
@@ -1439,7 +1469,7 @@ pub const Training = struct {
     ///
     /// trainable_only Whether to skip non-trainable parameters
     pub fn copyBufferToParameters(self: *@This(), out_buffer: *Value, trainable_only: bool) !void {
-      try Error.check(api.underlying.CopyBufferToParameters.?(@ptrCast(self), @ptrCast(out_buffer), trainable_only));
+      try Error.check(api.underlying.CopyBufferToParameters.?(apiCast(self), apiCast(out_buffer), trainable_only));
     }
 
     /// Export a model that can be used for inferencing.
@@ -1454,10 +1484,10 @@ pub const Training = struct {
     /// graph_output_names Names of the outputs that are needed in the inference model.
     pub fn exportModelForInferencing(self: *@This(), path: Utils.Path, graph_output_names: []const [*:0]const u8) !void {
       try Error.check(api.underlying.ExportModelForInferencing.?(
-        @ptrCast(self),
+        apiCast(self),
         path,
         graph_output_names.len,
-        @ptrCast(graph_output_names.ptr)
+        apiCast(graph_output_names.ptr)
       ));
     }
 
@@ -1467,7 +1497,7 @@ pub const Training = struct {
     /// allocate the OrtValue(s) provided to the OrtTrainingApi::TrainStep function.
     pub fn getTrainingModelInputCount(self: *const @This()) !usize {
       var out: usize = 0;
-      try Error.check(api.underlying.TrainingSessionGetTrainingModelInputCount.?(@ptrCast(self), &out));
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelInputCount.?(apiCast(self), &out));
       return out;
     }
 
@@ -1477,7 +1507,7 @@ pub const Training = struct {
     /// allocate the OrtValue(s) provided to the OrtTrainingApi::EvalStep function.
     pub fn getEvalModelInputCount(self: *const @This()) !usize {
       var out: usize = 0;
-      try Error.check(api.underlying.TrainingSessionGetEvalModelInputCount.?(@ptrCast(self), &out));
+      try Error.check(api.underlying.TrainingSessionGetEvalModelInputCount.?(apiCast(self), &out));
       return out;
     }
 
@@ -1490,7 +1520,7 @@ pub const Training = struct {
     /// allocator: The allocator to use to allocate the memory for the requested name.
     pub fn getTrainingModelInputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(api.underlying.TrainingSessionGetTrainingModelInputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(api.underlying.TrainingSessionGetTrainingModelInputName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -1503,12 +1533,12 @@ pub const Training = struct {
     /// allocator: The allocator to use to allocate the memory for the requested name.
     pub fn getEvalModelInputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(api.underlying.TrainingSessionGetEvalModelInputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(api.underlying.TrainingSessionGetEvalModelInputName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     pub fn deinit(self: *@This()) void {
-      api.underlying.ReleaseTrainingSession.?(@ptrCast(self));
+      api.underlying.ReleaseTrainingSession.?(apiCast(self));
     }
   };
 };
@@ -1539,23 +1569,23 @@ pub const Api = struct {
     ) !void {
       var self: ?*@This() = null;
       if (logging_interface == null and threading_options == null) {
-        try Error.check(Api.ort.CreateEnv.?(@intFromEnum(logging_level), logid, @ptrCast(&self)));
+        try Error.check(Api.ort.CreateEnv.?(@intFromEnum(logging_level), logid, apiCast(&self)));
       } else if (logging_interface == null) {
         const to = try threading_options.?.c();
         defer to.deinit();
         try Error.check(Api.ort.CreateEnvWithGlobalThreadPools.?(
             @intFromEnum(logging_level),
-            @ptrCast(logid),
-            @ptrCast(to),
-            @ptrCast(&self),
+            apiCast(logid),
+            apiCast(to),
+            apiCast(&self),
         ));
       } else if (threading_options == null) {
         try Error.check(Api.ort.CreateEnvWithCustomLogger.?(
             logging_interface.?.log_fn,
             logging_interface.?.ptr,
             @intFromEnum(logging_level),
-            @ptrCast(logid),
-            @ptrCast(&self),
+            apiCast(logid),
+            apiCast(&self),
         ));
       } else {
         const to = try threading_options.?.c();
@@ -1564,12 +1594,12 @@ pub const Api = struct {
             logging_interface.?.log_fn,
             logging_interface.?.ptr,
             @intFromEnum(logging_level),
-            @ptrCast(logid),
-            @ptrCast(to),
-            @ptrCast(&self),
+            apiCast(logid),
+            apiCast(to),
+            apiCast(&self),
         ));
       }
-      underlying = @ptrCast(self orelse return error.OutOfMemory);
+      underlying = apiCast(self orelse return error.OutOfMemory);
     }
 
     /// Wraps OrtApi::EnableTelemetry and OrtApi::DisableTelemetry
@@ -1587,7 +1617,7 @@ pub const Api = struct {
 
     /// Identifies the programming language calling the API for telemetry tracking.
     /// see: OrtApi::setLanguageProjection
-    pub const LanguageProjection = enum(c_uint) {
+    pub const LanguageProjection = enum(Api.c.OrtLanguageProjection) {
       C = @bitCast(Api.c.ORT_PROJECTION_C),
       CPLUSPLUS = @bitCast(Api.c.ORT_PROJECTION_CPLUSPLUS),
       CSHARP = @bitCast(Api.c.ORT_PROJECTION_CSHARP),
@@ -1604,19 +1634,19 @@ pub const Api = struct {
 
     /// Wraps OrtApi::RegisterExecutionProviderLibrary
     pub fn registerExecutionProviderLibrary(registration_name: [*:0]const u8, path: Utils.Path) !void {
-      try Error.check(ort.RegisterExecutionProviderLibrary.?(underlying, @ptrCast(registration_name), path));
+      try Error.check(ort.RegisterExecutionProviderLibrary.?(underlying, apiCast(registration_name), path));
     }
 
     /// Wraps OrtApi::UnregisterExecutionProviderLibrary
     pub fn unregisterExecutionProviderLibrary(registration_name: [*:0]const u8) !void {
-      try Error.check(ort.UnregisterExecutionProviderLibrary.?(underlying, @ptrCast(registration_name)));
+      try Error.check(ort.UnregisterExecutionProviderLibrary.?(underlying, apiCast(registration_name)));
     }
 
     /// Wraps OrtApi::GetEpDevices
     pub fn getEpDevices() ![]const *const Ep.Device {
       var retval_ptr: ?[*]const *const Ep.Device = null;
       var retval_len: usize = 0;
-      try Error.check(ort.GetEpDevices.?(underlying, @ptrCast(&retval_ptr), &retval_len));
+      try Error.check(ort.GetEpDevices.?(underlying, apiCast(&retval_ptr), &retval_len));
       return (retval_ptr orelse return error.OutOfMemory)[0 .. retval_len];
     }
 
@@ -1637,11 +1667,11 @@ pub const Api = struct {
       var retval: ?*Allocator = null;
       try Error.check(Api.ort.CreateSharedAllocator.?(
           underlying,
-          @ptrCast(ep_device),
+          apiCast(ep_device),
           @intFromEnum(mem_type),
           @intFromEnum(allocator_type),
-          @ptrCast(options),
-          @ptrCast(&retval),
+          apiCast(options),
+          apiCast(&retval),
       ));
       return retval orelse error.OutOfMemory;
     }
@@ -1650,7 +1680,7 @@ pub const Api = struct {
     /// Release a shared allocator from the OrtEnv for the OrtEpDevice and memory type.
     /// If no shared allocator exists, this is a no-op.
     pub fn releaseSharedAllocator(ep_device: *const Ep.Device, mem_type: Allocator.DeviceMemoryType) !void {
-      try Error.check(Api.ort.ReleaseSharedAllocator.?(underlying, @ptrCast(ep_device), @intFromEnum(mem_type)));
+      try Error.check(Api.ort.ReleaseSharedAllocator.?(underlying, apiCast(ep_device), @intFromEnum(mem_type)));
     }
 
     /// Wraps OrtApi::CopyTensors
@@ -1659,7 +1689,7 @@ pub const Api = struct {
     /// stream: Optional SyncStream for async copy.
     pub fn copyTensors(src: []const *const Value, dst: []const *Value, stream: ?*SyncStream) !void {
       std.debug.assert(src.len == dst.len);
-      try Error.check(Api.ort.CopyTensors.?(underlying, @ptrCast(src.ptr), @ptrCast(dst.ptr), @ptrCast(stream), src.len));
+      try Error.check(Api.ort.CopyTensors.?(underlying, apiCast(src.ptr), apiCast(dst.ptr), apiCast(stream), src.len));
     }
 
     /// Release the Env object.
@@ -1675,7 +1705,7 @@ pub const Api = struct {
     /// Create an OrtValueInfo for use as an OrtGraph input or output.
     pub fn createValueInfo(name: [*:0]const u8, type_info: *const TypeInfo) !*Value.Info {
       var out: ?*Value.Info = null;
-      try Error.check(underlying.CreateValueInfo.?(name, @ptrCast(type_info), @ptrCast(&out)));
+      try Error.check(underlying.CreateValueInfo.?(name, apiCast(type_info), apiCast(&out)));
       return out orelse return error.OutOfMemory;
     }
 
@@ -1683,14 +1713,14 @@ pub const Api = struct {
     /// The OrtModel must have a Graph with inputs/outputs set.
     pub fn createSessionFromModel(model: *const Model, options: *const Session.Options.C) !*Session {
       var out: ?*Session = null;
-      try Error.check(underlying.CreateSessionFromModel.?(env.underlying, @ptrCast(model), @ptrCast(options), @ptrCast(&out)));
+      try Error.check(underlying.CreateSessionFromModel.?(env.underlying, apiCast(model), apiCast(options), apiCast(&out)));
       return out orelse return error.OutOfMemory;
     }
 
     /// Create an OrtSession to augment an existing model (from path).
     pub fn createModelEditorSession(model_path: Utils.Path, options: *const Session.Options.C) !*Session {
       var out: ?*Session = null;
-      try Error.check(underlying.CreateModelEditorSession.?(env.underlying, model_path, @ptrCast(options), @ptrCast(&out)));
+      try Error.check(underlying.CreateModelEditorSession.?(env.underlying, model_path, apiCast(options), apiCast(&out)));
       return out orelse return error.OutOfMemory;
     }
 
@@ -1701,8 +1731,8 @@ pub const Api = struct {
         env.underlying, 
         data.ptr, 
         data.len, 
-        @ptrCast(options), 
-        @ptrCast(&out)
+        apiCast(options), 
+        apiCast(&out)
       ));
       return out orelse return error.OutOfMemory;
     }
@@ -1710,18 +1740,18 @@ pub const Api = struct {
     /// Query the session for the opset version of a domain.
     pub fn sessionGetOpsetForDomain(session: *const Session, domain: [*:0]const u8) !c_int {
       var opset: c_int = 0;
-      try Error.check(underlying.SessionGetOpsetForDomain.?(@ptrCast(session), domain, &opset));
+      try Error.check(underlying.SessionGetOpsetForDomain.?(apiCast(session), domain, &opset));
       return opset;
     }
 
     /// Apply changes to augment the ONNX model in a session.
     pub fn applyModelToModelEditorSession(session: *Session, model: *Model) !void {
-      try Error.check(underlying.ApplyModelToModelEditorSession.?(@ptrCast(session), @ptrCast(model)));
+      try Error.check(underlying.ApplyModelToModelEditorSession.?(apiCast(session), apiCast(model)));
     }
 
     /// Finalize the Model Editor session.
     pub fn finalizeModelEditorSession(session: *Session, options: *const Session.Options.C, prepacked: ?*PrepackedWeightsContainer) !void {
-      try Error.check(underlying.FinalizeModelEditorSession.?(@ptrCast(session), @ptrCast(options), @ptrCast(prepacked)));
+      try Error.check(underlying.FinalizeModelEditorSession.?(apiCast(session), apiCast(options), apiCast(prepacked)));
     }
   };
 
@@ -1740,7 +1770,7 @@ pub const Api = struct {
       std.debug.assert(@bitSizeOf(Flags) == 32);
     }
 
-    pub const CompiledModelCompatibility = enum(c_uint) {
+    pub const CompiledModelCompatibility = enum(Api.c.OrtCompiledModelCompatibility) {
       NOT_APPLICABLE = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_NOT_APPLICABLE),
       SUPPORTED_OPTIMAL = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_SUPPORTED_OPTIMAL),
       SUPPORTED_PREFER_RECOMPILATION = @bitCast(Api.c.OrtCompiledModelCompatibility_EP_SUPPORTED_PREFER_RECOMPILATION),
@@ -1796,9 +1826,9 @@ pub const Api = struct {
         const panicFn = struct {pub fn panicFn() callconv(.c) noreturn {
           @panic("cannot call any function inside " ++ @typeName(T) ++ " as it was not initialized");
         }}.panicFn;
-        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = @ptrCast(&panicFn);
+        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = apiCast(&panicFn);
       } else {
-        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = @ptrCast(&struct {pub fn panicFn() callconv(.c) noreturn {
+        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = apiCast(&struct {pub fn panicFn() callconv(.c) noreturn {
           @panic("cannot call " ++ f.name ++ " as " ++ @typeName(T) ++ " was not initialized");
         }}.panicFn);
       }
@@ -1811,15 +1841,15 @@ pub const Api = struct {
   /// You MUST call this function before creating anything.
   /// You need to call `deinitApi` to free resources created by this function
   pub fn init(options: Options, comptime comptime_options: ComptimeOptions) !void {
-    base = @ptrCast(Api.c.OrtGetApiBase());
-    ort = @ptrCast(base.GetApi.?(c.ORT_API_VERSION) orelse return error.ApiVersionMismatch);
-    version_string = std.mem.sliceTo(@as([*:0] const u8, @ptrCast(base.GetVersionString.?())), 0);
+    base = apiCast(Api.c.OrtGetApiBase());
+    ort = apiCast(base.GetApi.?(c.ORT_API_VERSION) orelse return error.ApiVersionMismatch);
+    version_string = std.mem.sliceTo(@as([*:0] const u8, apiCast(base.GetVersionString.?())), 0);
 
-    editor.underlying = if (options.editor) @ptrCast(ort.GetModelEditorApi.?()) else comptime_options.impl(comptime_options.editor_behavior, c.OrtModelEditorApi);
-    compiler.underlying = if (options.compiler) @ptrCast(ort.GetCompileApi.?()) else comptime_options.impl(comptime_options.compile_behavior, c.OrtCompileApi);
-    Ep.api.underlying = if (options.ep) @ptrCast(ort.GetEpApi.?()) else comptime_options.impl(comptime_options.ep_behavior, c.OrtEpApi);
+    editor.underlying = if (options.editor) apiCast(ort.GetModelEditorApi.?()) else comptime_options.impl(comptime_options.editor_behavior, c.OrtModelEditorApi);
+    compiler.underlying = if (options.compiler) apiCast(ort.GetCompileApi.?()) else comptime_options.impl(comptime_options.compile_behavior, c.OrtCompileApi);
+    Ep.api.underlying = if (options.ep) apiCast(ort.GetEpApi.?()) else comptime_options.impl(comptime_options.ep_behavior, c.OrtEpApi);
     const training_fallback = comptime_options.impl(comptime_options.training_behavior, c.OrtTrainingApi);
-    Training.api.underlying = if (options.training) @ptrCast(ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
+    Training.api.underlying = if (options.training) apiCast(ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
 
     try Api.env.init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
     errdefer Api.env.deinit();
@@ -1856,7 +1886,7 @@ pub const Api = struct {
 
     /// So freeing may fail too!!?!?!
     pub fn deinit(self: *const @This()) !void {
-      try Error.check(ort.ReleaseAvailableProviders.?(@ptrCast(self.providers.ptr), @intCast(self.providers.len)));
+      try Error.check(ort.ReleaseAvailableProviders.?(apiCast(self.providers.ptr), @intCast(self.providers.len)));
     }
   };
 
@@ -1898,10 +1928,10 @@ pub const Api = struct {
   pub fn getModelCompatibilityForEpDevices(ep_devices: []const *const Ep.Device, compatibility_info: [*:0]const u8) !compiler.CompiledModelCompatibility {
     var out: compiler.CompiledModelCompatibility = undefined;
     try Error.check(Api.ort.GetModelCompatibilityForEpDevices.?(
-        @ptrCast(ep_devices.ptr),
+        apiCast(ep_devices.ptr),
         ep_devices.len,
         compatibility_info,
-        @ptrCast(&out)
+        apiCast(&out)
     ));
     return out;
   }
@@ -1909,7 +1939,7 @@ pub const Api = struct {
 
 pub const Logging = struct {
   /// Levels of logging verbosity, from least severe (verbose) to most severe (fatal).
-  pub const Level = enum(c_uint) {
+  pub const Level = enum(Api.c.OrtLoggingLevel) {
     verbose = @bitCast(Api.c.ORT_LOGGING_LEVEL_VERBOSE),
     info = @bitCast(Api.c.ORT_LOGGING_LEVEL_INFO),
     warning = @bitCast(Api.c.ORT_LOGGING_LEVEL_WARNING),
@@ -1931,7 +1961,7 @@ pub const Logging = struct {
       const T = @TypeOf(context);
       const Sub = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
       return .{
-        .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(context),
+        .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(context),
         .log_fn = &struct {
           fn log_fn(
             ctx: ?*anyopaque,
@@ -1941,7 +1971,7 @@ pub const Logging = struct {
             code_location: ?[*:0]const u8,
             messages: ?[*:0]const u8
           ) callconv(.c) void {
-            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(ctx.?);
+            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
             original.log(@as(Logging.Level, @enumFromInt(severity)), category, logid, code_location, messages);
           }
         }.log_fn,
@@ -1971,7 +2001,7 @@ pub const Error = struct {
   };
 
   /// Return codes for API functions; Ok indicates success, others indicate specific failure types.
-  pub const Code = enum(c_uint) {
+  pub const Code = enum(Api.c.OrtErrorCode) {
     Ok = @bitCast(Api.c.ORT_OK),
     Fail = @bitCast(Api.c.ORT_FAIL),
     InvalidArgument = @bitCast(Api.c.ORT_INVALID_ARGUMENT),
@@ -1991,24 +2021,25 @@ pub const Error = struct {
 
   /// This is a wrapper around c version of OrtStatus
   pub const Status = opaque {
+    pub const Underlying = Api.c.OrtStatus;
     /// create a new status, this function uses c's allocator
     pub fn init(code: c_uint, msg: [*:0]const u8) !*@This() {
-      return @ptrCast(Api.ort.CreateStatus.?(code, msg) orelse return error.OutOfMemory);
+      return apiCast(Api.ort.CreateStatus.?(code, msg) orelse return error.OutOfMemory);
     }
 
     /// get the error messages from the status
     pub fn getErrorMessage(self: *const @This()) [*:0]const u8 {
-      return @ptrCast(Api.ort.GetErrorMessage.?(@ptrCast(self)));
+      return apiCast(Api.ort.GetErrorMessage.?(apiCast(self)));
     }
 
     /// Get the error code from the status
     pub fn getErrorCode(self: *const @This()) c_uint {
-      return Api.ort.GetErrorCode.?(@ptrCast(self));
+      return Api.ort.GetErrorCode.?(apiCast(self));
     }
 
     /// release the status
     pub fn deinit(self: *@This()) void {
-      return Api.ort.ReleaseStatus.?(@ptrCast(self));
+      return Api.ort.ReleaseStatus.?(apiCast(self));
     }
   };
 
@@ -2017,7 +2048,7 @@ pub const Error = struct {
   /// If `onnx_status` is NOT null, this function
   ///   calls the on_error_fn and returns it's error or returns `OnnxError` if it is null
   pub fn check(ort_status: ?*Api.c.OrtStatus) Set!void {
-    if (@as(?*Status, @ptrCast(ort_status))) |status| {
+    if (@as(?*Status, apiCast(ort_status))) |status| {
       const min_error_code, const max_error_code = comptime blk: {
         const fields = @typeInfo(Error.Code).@"enum".fields;
         var min = fields[0].value;
@@ -2044,10 +2075,11 @@ pub const Error = struct {
 };
 
 pub const KeyValuePairs = opaque {
+  pub const Underlying = Api.c.OrtKeyValuePairs;
   /// Wraps OrtApi::CreateKeyValuePairs
   pub fn init() !*@This() {
     var retval: ?*@This() = null;
-    Api.ort.CreateKeyValuePairs.?(@ptrCast(&retval));
+    Api.ort.CreateKeyValuePairs.?(apiCast(&retval));
     return retval orelse error.OutOfMemory;
   }
 
@@ -2055,17 +2087,17 @@ pub const KeyValuePairs = opaque {
   pub fn add(self: *@This(), key: [*:0]const u8, value: [*:0]const u8) void {
     // Since AddKeyValuePair returns nothing, we don't know if it errored; hence this function returns no error
     // We technically could use `get` but no need for another virtual call if library authors thought this was not an issue
-    Api.ort.AddKeyValuePair.?(@ptrCast(self), key, value);
+    Api.ort.AddKeyValuePair.?(apiCast(self), key, value);
   }
 
   /// Wraps OrtApi::GetKeyValue
   pub fn get(self: *const @This(), key: [*:0]const u8) ?[*:0]const u8 {
-    return @ptrCast(Api.ort.GetKeyValue.?(@ptrCast(self), key));
+    return apiCast(Api.ort.GetKeyValue.?(apiCast(self), key));
   }
 
   /// Wraps OrtApi::RemoveKeyValuePair
   pub fn remove(self: *@This(), key: [*:0]const u8) void {
-    Api.ort.RemoveKeyValuePair.?(@ptrCast(self), key);
+    Api.ort.RemoveKeyValuePair.?(apiCast(self), key);
   }
 
   /// Wraps OrtApi::GetKeyValuePairs
@@ -2074,34 +2106,35 @@ pub const KeyValuePairs = opaque {
     var keys_ptr: [*c]const [*:0]const u8 = &[_][*:0]const u8{};
     var values_ptr: [*c]const [*:0]const u8 = &[_][*:0]const u8{};
     var count: usize = 0;
-    Api.ort.GetKeyValuePairs.?(@ptrCast(self), @ptrCast(&keys_ptr), @ptrCast(&values_ptr), &count);
+    Api.ort.GetKeyValuePairs.?(apiCast(self), apiCast(&keys_ptr), apiCast(&values_ptr), &count);
     return .{ keys_ptr[0..count], values_ptr[0..count] };
   }
 
   /// Wraps OrtApi::ReleaseKeyValuePairs
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseKeyValuePairs.?(@ptrCast(self));
+    Api.ort.ReleaseKeyValuePairs.?(apiCast(self));
   }
 };
 
 pub const SyncStream = opaque {
+  pub const Underlying = Api.c.OrtSyncStream;
   /// Wraps OrtApi::CreateSyncStreamForEpDevice
   /// stream_options: Optional KeyValuePairs for stream configuration.
   pub fn init(device: *const Ep.Device, stream_options: ?*const KeyValuePairs) !*@This() {
     var retval: ?*@This() = null;
-    try Error.check(Api.ort.CreateSyncStreamForEpDevice.?(@ptrCast(device), @ptrCast(stream_options), @ptrCast(&retval)));
+    try Error.check(Api.ort.CreateSyncStreamForEpDevice.?(apiCast(device), apiCast(stream_options), apiCast(&retval)));
     return retval orelse error.OutOfMemory;
   }
 
   /// Wraps OrtApi::SyncStream_GetHandle
   /// Returns the native handle
   pub fn getHandle(self: *@This()) ?*anyopaque {
-    return Api.ort.SyncStream_GetHandle.?(@ptrCast(self));
+    return Api.ort.SyncStream_GetHandle.?(apiCast(self));
   }
 
   /// Wraps OrtApi::ReleaseSyncStream
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseSyncStream.?(@ptrCast(self));
+    Api.ort.ReleaseSyncStream.?(apiCast(self));
   }
 
   /// Get the OrtSyncStreamImpl associated with an OrtSyncStream instance.
@@ -2115,7 +2148,7 @@ pub const SyncStream = opaque {
   ///
   /// Remarks: There should always be an OrtSyncStreamImpl associated with an OrtSyncStream instance that the EP gets.
   pub fn getImpl(self: *const @This()) *const Ep.SyncStreamImpl {
-    return @ptrCast(Ep.api.underlying.SyncStream_GetImpl.?(@ptrCast(self)));
+    return apiCast(Ep.api.underlying.SyncStream_GetImpl.?(apiCast(self)));
   }
 
   /// Get the current sync ID for a stream.
@@ -2125,7 +2158,7 @@ pub const SyncStream = opaque {
   ///
   /// since Version 1.23.
   pub fn getSyncId(self: *const @This()) u64 {
-    return Ep.api.underlying.SyncStream_GetSyncId.?(@ptrCast(self));
+    return Ep.api.underlying.SyncStream_GetSyncId.?(apiCast(self));
   }
 
   /// Get the sync ID for the last time the consumer_stream waited on the producer_stream.
@@ -2138,19 +2171,20 @@ pub const SyncStream = opaque {
   ///
   /// since Version 1.23.
   pub fn getSyncIdForLastWaitOnSyncStream(producer: *const @This(), consumer: *const @This()) u64 {
-    return Ep.api.underlying.GetSyncIdForLastWaitOnSyncStream.?(@ptrCast(producer), @ptrCast(consumer));
+    return Ep.api.underlying.GetSyncIdForLastWaitOnSyncStream.?(apiCast(producer), apiCast(consumer));
   }
 };
 
 /// Structure of function pointers that defines a memory allocator.
 /// Used for both internal and custom user-defined memory management.
 pub const Allocator = struct {
+  pub const Underlying = Api.c.OrtAllocator;
   /// The underlying C allocator pointer.
-  underlying: Api.c.OrtAllocator,
-  comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+  underlying: Underlying,
+  comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
 
   /// Types of memory allocators (Device-local, Arena-wrapped, or Read-only).
-  pub const Type = enum(c_int) {
+  pub const Type = enum(Api.c.OrtAllocatorType) {
     invalid = @bitCast(Api.c.OrtInvalidAllocator),
     device = @bitCast(Api.c.OrtDeviceAllocator),
     arena = @bitCast(Api.c.OrtArenaAllocator),
@@ -2159,7 +2193,7 @@ pub const Allocator = struct {
 
   /// This matches OrtDevice::MemoryType values
   /// Specific memory access traits for devices (Default vs Host Accessible).
-  pub const DeviceMemoryType = enum(c_uint) {
+  pub const DeviceMemoryType = enum(Api.c.OrtDeviceMemoryType) {
     DEFAULT = @bitCast(Api.c.OrtDeviceMemoryType_DEFAULT),
     HOST_ACCESSIBLE = @bitCast(Api.c.OrtDeviceMemoryType_HOST_ACCESSIBLE),
   };
@@ -2167,6 +2201,7 @@ pub const Allocator = struct {
   /// Configuration for an arena-based allocator.
   /// Defines maximum memory limits and growth strategies.
   pub const ArenaCfg = opaque {
+    pub const Underlying = Api.c.OrtArenaCfg;
     pub const Options = struct {
       /// Maximum memory limit (0 for default).
       max_mem: usize = 0,
@@ -2192,7 +2227,7 @@ pub const Allocator = struct {
         @intFromEnum(options.extend_strategy),
         options.initial_chunk,
         options.max_dead,
-        @ptrCast(&self)
+        apiCast(&self)
       ));
       return self orelse error.OutOfMemory;
     }
@@ -2241,18 +2276,18 @@ pub const Allocator = struct {
     pub fn init(options: OptionsV2) !*@This() {
       const created = Utils.createOptionsKVL(options, .usize);
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateArenaCfgV2.?(created.keys(), created.vals(), created.len, @ptrCast(&self)));
+      try Error.check(Api.ort.CreateArenaCfgV2.?(created.keys(), created.vals(), created.len, apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
     /// Release the ArenaCfg object.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseArenaCfg.?(@ptrCast(self));
+      Api.ort.ReleaseArenaCfg.?(apiCast(self));
     }
   };
 
   /// Memory types for allocated memory, execution provider specific types should be extended in each provider.
-  pub const MemoryType = enum(c_int) {
+  pub const MemoryType = enum(Api.c.OrtMemoryDevice) {
     /// The default allocator for execution provider
     default = @bitCast(Api.c.OrtMemTypeDefault),
     /// Any CPU memory used by non-CPU execution provider
@@ -2262,8 +2297,9 @@ pub const Allocator = struct {
   };
 
   pub const MemoryDevice = opaque{
+    pub const Underlying = Api.c.OrtMemoryDevice;
     /// This mimics OrtDevice type constants so they can be returned in the API
-    pub const Type = enum(c_uint) {
+    pub const Type = enum(Api.c.OrtMemoryInfoDeviceType) {
       CPU = @bitCast(Api.c.OrtMemoryInfoDeviceType_CPU),
       GPU = @bitCast(Api.c.OrtMemoryInfoDeviceType_GPU),
       FPGA = @bitCast(Api.c.OrtMemoryInfoDeviceType_FPGA),
@@ -2281,7 +2317,7 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn equal(self: *const @This(), other: *const @This()) bool {
-      return Ep.api.underlying.MemoryDevice_AreEqual.?(@ptrCast(self), @ptrCast(other));
+      return Ep.api.underlying.MemoryDevice_AreEqual.?(apiCast(self), apiCast(other));
     }
 
     /// Get the OrtMemoryInfoDeviceType value from an OrtMemoryDevice instance.
@@ -2291,7 +2327,7 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn getDeviceType(self: *const @This()) MemoryDevice.Type {
-      return @enumFromInt(Ep.api.underlying.MemoryDevice_GetDeviceType.?(@ptrCast(self)));
+      return @enumFromInt(Ep.api.underlying.MemoryDevice_GetDeviceType.?(apiCast(self)));
     }
 
     /// Get the OrtDeviceMemoryType value from an OrtMemoryDevice instance.
@@ -2301,7 +2337,7 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn getMemoryType(self: *const @This()) Allocator.DeviceMemoryType {
-      return @enumFromInt(Ep.api.underlying.MemoryDevice_GetMemoryType.?(@ptrCast(self)));
+      return @enumFromInt(Ep.api.underlying.MemoryDevice_GetMemoryType.?(apiCast(self)));
     }
 
     /// Get the vendor ID from an OrtMemoryDevice instance.
@@ -2314,7 +2350,7 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn getVendorId(self: *const @This()) u32 {
-      return Ep.api.underlying.MemoryDevice_GetVendorId.?(@ptrCast(self));
+      return Ep.api.underlying.MemoryDevice_GetVendorId.?(apiCast(self));
     }
 
     /// Get the device ID from an OrtMemoryDevice instance.
@@ -2324,12 +2360,13 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn getDeviceId(self: *const @This()) u32 {
-      return Ep.api.underlying.MemoryDevice_GetDeviceId.?(@ptrCast(self));
+      return Ep.api.underlying.MemoryDevice_GetDeviceId.?(apiCast(self));
     }
   };
 
   /// Describes the location and traits of a memory allocation (e.g., CPU, GPU device id).
   pub const MemoryInfo = opaque {
+    pub const Underlying = Api.c.OrtMemoryInfo;
     /// Create an ::OrtMemoryInfo
     /// name_: Arbitrary name.
     /// type: The allocator type (Device vs Arena).
@@ -2337,7 +2374,7 @@ pub const Allocator = struct {
     /// mem_type: Memory type (Input vs Output vs Default).
     pub fn init(name_: [*:0]const u8, alloc_type: Allocator.Type, id_: i32, mem_type: MemoryType) !*@This() {
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateMemoryInfo.?(name_, @intFromEnum(alloc_type), id_, @intFromEnum(mem_type), @ptrCast(&self)));
+      try Error.check(Api.ort.CreateMemoryInfo.?(name_, @intFromEnum(alloc_type), id_, @intFromEnum(mem_type), apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
@@ -2346,7 +2383,7 @@ pub const Allocator = struct {
     /// Same as using OrtApi::CreateMemoryInfo with name = "Cpu" and id = 0.
     pub fn initCpu(alloc_type: Allocator.Type, mem_type: MemoryType) !*@This() {
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateCpuMemoryInfo.?(@intFromEnum(alloc_type), @intFromEnum(mem_type), @ptrCast(&self)));
+      try Error.check(Api.ort.CreateCpuMemoryInfo.?(@intFromEnum(alloc_type), @intFromEnum(mem_type), apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
@@ -2379,7 +2416,7 @@ pub const Allocator = struct {
         @intFromEnum(options.mem_type),
         options.alignment,
         @intFromEnum(options.allocator_type),
-        @ptrCast(&self)
+        apiCast(&self)
       ));
       return self orelse error.OutOfMemory;
     }
@@ -2388,7 +2425,7 @@ pub const Allocator = struct {
     /// Compares all settings of each ::OrtMemoryInfo for equality
     pub fn compare(self: *const @This(), other: *const @This()) !bool {
       var out: c_int = undefined;
-      try Error.check(Api.ort.CompareMemoryInfo.?(@ptrCast(self), @ptrCast(other), &out));
+      try Error.check(Api.ort.CompareMemoryInfo.?(apiCast(self), apiCast(other), &out));
       return out == 0;
     }
 
@@ -2396,28 +2433,28 @@ pub const Allocator = struct {
     /// Do NOT free the returned pointer. It is valid for the lifetime of the ::OrtMemoryInfo
     pub fn name(self: *const @This()) ![*:0]const u8 {
       var out: ?[*:0]const u8 = null;
-      try Error.check(Api.ort.MemoryInfoGetName.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.MemoryInfoGetName.?(apiCast(self), apiCast(&out)));
       return out.?;
     }
 
     /// Get the device id from ::OrtMemoryInfo
     pub fn id(self: *const @This()) !c_int {
       var out: c_int = 0;
-      try Error.check(Api.ort.MemoryInfoGetId.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.MemoryInfoGetId.?(apiCast(self), &out));
       return out;
     }
 
     /// Get the ::OrtMemType from ::OrtMemoryInfo
     pub fn memType(self: *const @This()) !MemoryType {
       var out: MemoryType = undefined;
-      try Error.check(Api.ort.MemoryInfoGetMemType.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.MemoryInfoGetMemType.?(apiCast(self), apiCast(&out)));
       return out;
     }
 
     /// Get the ::Allocator.Type from ::OrtMemoryInfo
     pub fn allocatorType(self: *const @This()) !Type {
       var out: Type = undefined;
-      try Error.check(Api.ort.MemoryInfoGetType.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.MemoryInfoGetType.?(apiCast(self), apiCast(&out)));
       return out;
     }
 
@@ -2431,38 +2468,38 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn getDevice(self: *const @This()) !*const Allocator.MemoryDevice {
-      return @ptrCast(Ep.api.underlying.MemoryInfo_GetMemoryDevice.?(@ptrCast(self)) orelse return error.OutOfMemory);
+      return apiCast(Ep.api.underlying.MemoryInfo_GetMemoryDevice.?(apiCast(self)) orelse return error.OutOfMemory);
     }
 
     /// Get OrtDevice type from MemoryInfo
     pub fn deviceType(self: *const @This()) !MemoryDevice.Type {
       var out: MemoryDevice.Type = undefined;
-      Api.ort.MemoryInfoGetDeviceType.?(@ptrCast(self), @ptrCast(&out));
+      Api.ort.MemoryInfoGetDeviceType.?(apiCast(self), apiCast(&out));
       return out;
     }
 
     /// Get the device memory type from ::OrtMemoryInfo
     pub fn deviceMemType(self: *const @This()) DeviceMemoryType {
-      return @enumFromInt(Api.ort.MemoryInfoGetDeviceMemType.?(@ptrCast(self)));
+      return @enumFromInt(Api.ort.MemoryInfoGetDeviceMemType.?(apiCast(self)));
     }
 
     /// Get the vendor id from ::OrtMemoryInfo
     pub fn vendorId(self: *const @This()) u32 {
-      return Api.ort.MemoryInfoGetVendorId.?(@ptrCast(self));
+      return Api.ort.MemoryInfoGetVendorId.?(apiCast(self));
     }
 
     /// Release the MemoryInfo object.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseMemoryInfo.?(@ptrCast(self));
+      Api.ort.ReleaseMemoryInfo.?(apiCast(self));
     }
 
     pub fn unregisterAllocator(self: *const @This()) !void {
-      try Error.check(Api.ort.UnregisterAllocator.?(Api.env.underlying, @ptrCast(self)));
+      try Error.check(Api.ort.UnregisterAllocator.?(Api.env.underlying, apiCast(self)));
     }
 
     /// Wraps OrtApi::CreateAndRegisterAllocator
     pub fn createAndRegisterAllocator(self: *const @This(), arena_cfg: ?*const ArenaCfg) !void {
-      try Error.check(Api.ort.CreateAndRegisterAllocator.?(Api.env.underlying, @ptrCast(self), @ptrCast(arena_cfg)));
+      try Error.check(Api.ort.CreateAndRegisterAllocator.?(Api.env.underlying, apiCast(self), apiCast(arena_cfg)));
     }
 
     pub const CreateAndRegisterOptionsV2 = struct {}; // TODO
@@ -2479,8 +2516,8 @@ pub const Allocator = struct {
       try Error.check(Api.ort.CreateAndRegisterAllocatorV2.?(
           Api.env.underlying,
           provider_type,
-          @ptrCast(self),
-          @ptrCast(arena_cfg),
+          apiCast(self),
+          apiCast(arena_cfg),
           created.keys(),
           created.vals(),
           created.len
@@ -2492,7 +2529,7 @@ pub const Allocator = struct {
     /// It is not an error to not find a matching allocator, in which case null is returned.
     pub fn getSharedAllocator(self: *const @This()) !?*Allocator {
       var retval: ?*Allocator = null;
-      try Error.check(Api.ort.GetSharedAllocator.?(Api.env.underlying, @ptrCast(self), @ptrCast(&retval)));
+      try Error.check(Api.ort.GetSharedAllocator.?(Api.env.underlying, apiCast(self), apiCast(&retval)));
       return retval;
     }
   };
@@ -2505,18 +2542,18 @@ pub const Allocator = struct {
   /// size: Size in bytes.
   /// returns the pointer to the allocated block. null is size = 0 or allocation failed
   pub fn alloc(self: *@This(), size: usize) ?[]u8 {
-    return @as([*]u8, @ptrCast(self.underlying.Alloc.?(@ptrCast(self), size) orelse return null))[0 .. size];
+    return @as([*]u8, apiCast(self.underlying.Alloc.?(apiCast(self), size) orelse return null))[0 .. size];
   }
 
   /// Frees a block of memory previously allocated with this allocator.
   /// p: Pointer to the memory block.
   pub fn free(self: *@This(), p: ?[*]u8) void {
-    self.underlying.Free.?(@ptrCast(self), @ptrCast(p));
+    self.underlying.Free.?(apiCast(self), apiCast(p));
   }
 
   /// Return a pointer to an ::OrtMemoryInfo that describes this allocator
   pub fn info(self: *const @This()) *const MemoryInfo {
-    return @ptrCast(self.underlying.Info.?(@ptrCast(self)).?);
+    return apiCast(self.underlying.Info.?(apiCast(self)).?);
   }
 
   /// Optional allocation function to use for memory allocations made during session initialization.
@@ -2526,7 +2563,7 @@ pub const Allocator = struct {
   /// size: Size in bytes.
   /// returns the pointer to an allocated block of `size` bytes. null if size was 0 or allocation failed.
   pub fn reserve(self: *@This(), size: usize) ?[]u8 {
-    return @as([*]u8, @ptrCast((self.underlying.Reserve orelse self.underlying.Alloc.?)(@ptrCast(self), size) orelse return null))[0 .. size];
+    return @as([*]u8, apiCast((self.underlying.Reserve orelse self.underlying.Alloc.?)(apiCast(self), size) orelse return null))[0 .. size];
   }
 
   /// Return a pointer to the OrtKeyValuePairs structure that contains the statistics of the allocator.
@@ -2550,7 +2587,7 @@ pub const Allocator = struct {
   ///       the returned OrtKeyValuePairs instance will be empty.
   pub fn stats(self: *const @This()) !?*KeyValuePairs {
     var retval: ?*KeyValuePairs = null;
-    try Error.check((self.underlying.GetStats orelse return null)(@ptrCast(self), @ptrCast(&retval)));
+    try Error.check((self.underlying.GetStats orelse return null)(apiCast(self), apiCast(&retval)));
     return retval;
   }
 
@@ -2566,12 +2603,12 @@ pub const Allocator = struct {
   ///
   /// Note: Implementation of this function is optional and AllocOnStream may be set to a nullptr.
   pub fn allocOnStream(self: *@This(), size: usize, stream: *SyncStream) ?[]u8 {
-    const ptr = (self.underlying.AllocOnStream orelse return self.alloc(size))(@ptrCast(self), size, @ptrCast(stream));
-    return @as([*]u8, @ptrCast(ptr orelse return null))[0 .. size];
+    const ptr = (self.underlying.AllocOnStream orelse return self.alloc(size))(apiCast(self), size, apiCast(stream));
+    return @as([*]u8, apiCast(ptr orelse return null))[0 .. size];
   }
 
   pub fn register(self: *@This()) !void {
-    try Error.check(Api.ort.RegisterAllocator.?(Api.env.underlying, @ptrCast(self)));
+    try Error.check(Api.ort.RegisterAllocator.?(Api.env.underlying, apiCast(self)));
   }
 
   pub fn unregister(self: *@This()) !void {
@@ -2580,59 +2617,63 @@ pub const Allocator = struct {
 
   pub fn create(session: *const Session, mem_info: *const MemoryInfo) !*Allocator {
     var out: ?*Allocator = null;
-    try Error.check(Api.ort.CreateAllocator.?(@ptrCast(session), @ptrCast(mem_info), @ptrCast(&out)));
+    try Error.check(Api.ort.CreateAllocator.?(apiCast(session), apiCast(mem_info), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Wraps GetAllocatorWithDefaultOptions
   pub fn getDefault() !*Allocator {
     var out: ?*Allocator = null;
-    try Error.check(Api.ort.GetAllocatorWithDefaultOptions.?(@ptrCast(&out)));
+    try Error.check(Api.ort.GetAllocatorWithDefaultOptions.?(apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// deinitialises the allocator
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseAllocator.?(@ptrCast(self));
+    Api.ort.ReleaseAllocator.?(apiCast(self));
   }
 };
 
 /// High-level type information for an OrtValue.
 pub const TypeInfo = opaque {
+  pub const Underlying = Api.c.OrtTypeInfo;
   pub const Map = opaque {
+    pub const Underlying = Api.c.OrtMapTypeInfo;
     pub fn getKeyType(self: *const @This()) !Value.Sub.Tensor.ElementDataType {
       var out: Value.Sub.Tensor.ElementDataType = undefined;
-      try Error.check(Api.ort.GetMapKeyType.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetMapKeyType.?(apiCast(self), apiCast(&out)));
       return out;
     }
 
     pub fn getValueType(self: *const @This()) !*TypeInfo {
       var out: ?*TypeInfo = null;
-      try Error.check(Api.ort.GetMapValueType.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetMapValueType.?(apiCast(self), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseMapTypeInfo.?(@ptrCast(self));
+      Api.ort.ReleaseMapTypeInfo.?(apiCast(self));
     }
   };
 
   pub const Sequence = opaque {
+    pub const Underlying = Api.c.OrtSequenceTypeInfo;
     pub fn getElementType(self: *const @This()) !*TypeInfo {
       var out: ?*TypeInfo = null;
-      try Error.check(Api.ort.GetSequenceElementType.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetSequenceElementType.?(apiCast(self), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseSequenceTypeInfo.?(@ptrCast(self));
+      Api.ort.ReleaseSequenceTypeInfo.?(apiCast(self));
     }
   };
 
   pub const Optional = opaque {
+    pub const Underlying = Api.c.OrtOptionalTypeInfo;
     pub fn getContainedType(self: *const @This()) !*TypeInfo {
       var out: ?*TypeInfo = null;
-      try Error.check(Api.ort.GetOptionalContainedTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetOptionalContainedTypeInfo.?(apiCast(self), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
   };
@@ -2640,35 +2681,35 @@ pub const TypeInfo = opaque {
   /// Create an TypeInfo instance for a Tensor. Asserts that the ModelEditor api is initialized
   pub fn forTensor(tensor_info: *const TensorTypeAndShapeInfo.C) !*TypeInfo {
     var out: ?*@This() = null;
-    try Error.check(Api.editor.underlying.CreateTensorTypeInfo.?(@ptrCast(tensor_info), @ptrCast(&out)));
+    try Error.check(Api.editor.underlying.CreateTensorTypeInfo.?(apiCast(tensor_info), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Create an TypeInfo instance for a SparseTensor.
   pub fn forSparseTensor(tensor_info: *const TensorTypeAndShapeInfo.C) !*TypeInfo {
     var out: ?*@This() = null;
-    try Error.check(Api.editor.underlying.CreateSparseTensorTypeInfo.?(@ptrCast(tensor_info), @ptrCast(&out)));
+    try Error.check(Api.editor.underlying.CreateSparseTensorTypeInfo.?(apiCast(tensor_info), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Create an TypeInfo instance for a Map.
   pub fn forMap(map_key_type: Value.Sub.Tensor.ElementDataType, map_value_type: *const TypeInfo) !*TypeInfo {
     var out: ?*@This() = null;
-    try Error.check(Api.editor.underlying.CreateMapTypeInfo.?(@intFromEnum(map_key_type), @ptrCast(map_value_type), @ptrCast(&out)));
+    try Error.check(Api.editor.underlying.CreateMapTypeInfo.?(@intFromEnum(map_key_type), apiCast(map_value_type), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Create an TypeInfo instance for a Sequence.
   pub fn forSequence(sequence_type: *const TypeInfo) !*TypeInfo {
     var out: ?*@This() = null;
-    try Error.check(Api.editor.underlying.CreateSequenceTypeInfo.?(@ptrCast(sequence_type), @ptrCast(&out)));
+    try Error.check(Api.editor.underlying.CreateSequenceTypeInfo.?(apiCast(sequence_type), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Create an TypeInfo instance for an Optional.
   pub fn forOptional(contained_type: *const TypeInfo) !*TypeInfo {
     var out: ?*@This() = null;
-    try Error.check(Api.editor.underlying.CreateOptionalTypeInfo.?(@ptrCast(contained_type), @ptrCast(&out)));
+    try Error.check(Api.editor.underlying.CreateOptionalTypeInfo.?(apiCast(contained_type), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -2676,45 +2717,45 @@ pub const TypeInfo = opaque {
   /// Do not free the returned value, it is valid until type_info is freed.
   pub fn toTensorTypeAndShapeInfo(self: *const @This()) !?*const TensorTypeAndShapeInfo.C {
     var out: ?*const TensorTypeAndShapeInfo.C = null;
-    try Error.check(Api.ort.CastTypeInfoToTensorInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.CastTypeInfoToTensorInfo.?(apiCast(self), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Get ::TypeInfo.Type from ::OrtTypeInfo
   pub fn onnxType(self: *const @This()) !Value.Type {
     var out: Value.Type = undefined;
-    try Error.check(Api.ort.GetOnnxTypeFromTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.GetOnnxTypeFromTypeInfo.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
   pub fn castToMapTypeInfo(self: *const @This()) !?*const Map {
     var out: ?*const Map = null;
-    try Error.check(Api.ort.CastTypeInfoToMapTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.CastTypeInfoToMapTypeInfo.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
   pub fn castToSequenceTypeInfo(self: *const @This()) !?*const Sequence {
     var out: ?*const Sequence = null;
-    try Error.check(Api.ort.CastTypeInfoToSequenceTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.CastTypeInfoToSequenceTypeInfo.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
   pub fn castToOptionalTypeInfo(self: *const @This()) !?*const Optional {
     var out: ?*const Optional = null;
-    try Error.check(Api.ort.CastTypeInfoToOptionalTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.CastTypeInfoToOptionalTypeInfo.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
   pub fn getDenotation(self: *const @This()) ![]const u8 {
     var denotation: ?[*:0]const u8 = null;
     var len: usize = 0;
-    try Error.check(Api.ort.GetDenotationFromTypeInfo.?(@ptrCast(self), @ptrCast(&denotation), &len));
+    try Error.check(Api.ort.GetDenotationFromTypeInfo.?(apiCast(self), apiCast(&denotation), &len));
     return if (denotation) |d| d[0..len] else "";
   }
 
   /// Release the TypeInfo object.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseTypeInfo.?(@ptrCast(self));
+    Api.ort.ReleaseTypeInfo.?(apiCast(self));
   }
 };
 
@@ -2771,11 +2812,11 @@ pub const ThreadingOptions = struct {
       const T = @TypeOf(instance);
       const Sub = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
       return .{
-        .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
+        .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(instance),
         .create_fn = &struct {
           pub fn create(ctx: ?*anyopaque, worker: ?*const fn(?*anyopaque) callconv(.c) void, arg: ?*anyopaque) callconv(.c) Api.c.OrtCustomThreadHandle {
-            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(ctx.?);
-            return @ptrCast(original.create(worker, arg));
+            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
+            return apiCast(original.create(worker, arg));
           }
         }.create,
       };
@@ -2783,49 +2824,50 @@ pub const ThreadingOptions = struct {
   };
 
   pub const C = opaque {
+    pub const Underlying = Api.c.OrtThreadingOptions;
     /// Wraps OrtApi::CreateThreadingOptions
     pub fn init() !*@This() {
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateThreadingOptions.?(@ptrCast(&self)));
+      try Error.check(Api.ort.CreateThreadingOptions.?(apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
     /// Wraps OrtApi::SetGlobalIntraOpNumThreads
     pub fn intraOpNumThreads(self: *@This(), num_threads: c_int) !void {
-      try Error.check(Api.ort.SetGlobalIntraOpNumThreads.?(@ptrCast(self), num_threads));
+      try Error.check(Api.ort.SetGlobalIntraOpNumThreads.?(apiCast(self), num_threads));
     }
 
     /// Wraps OrtApi::SetGlobalInterOpNumThreads
     pub fn interOpNumThreads(self: *@This(), num_threads: c_int) !void {
-      try Error.check(Api.ort.SetGlobalInterOpNumThreads.?(@ptrCast(self), num_threads));
+      try Error.check(Api.ort.SetGlobalInterOpNumThreads.?(apiCast(self), num_threads));
     }
 
     /// Wraps OrtApi::SetGlobalSpinControl
     pub fn spinControl(self: *@This(), allow_spinning: bool) !void {
-      try Error.check(Api.ort.SetGlobalSpinControl.?(@ptrCast(self), @intFromBool(allow_spinning)));
+      try Error.check(Api.ort.SetGlobalSpinControl.?(apiCast(self), @intFromBool(allow_spinning)));
     }
 
     /// Wraps OrtApi::SetGlobalDenormalAsZero
     pub fn denormalAsZero(self: *@This()) !void {
-      try Error.check(Api.ort.SetGlobalDenormalAsZero.?(@ptrCast(self)));
+      try Error.check(Api.ort.SetGlobalDenormalAsZero.?(apiCast(self)));
     }
 
     pub fn customThreadCreationInterface(self: *@This(), interface: ThreadCreationInterface) !void {
-      try Error.check(Api.ort.SetGlobalCustomCreateThreadFn.?(@ptrCast(self), interface.create_fn));
-      if (interface.ptr) |p| try Error.check(Api.ort.SetGlobalCustomThreadCreationOptions.?(@ptrCast(self), p));
+      try Error.check(Api.ort.SetGlobalCustomCreateThreadFn.?(apiCast(self), interface.create_fn));
+      if (interface.ptr) |p| try Error.check(Api.ort.SetGlobalCustomThreadCreationOptions.?(apiCast(self), p));
     }
 
     pub fn customThreadJoinFunction(self: *@This(), f: *const fn(*const Api.c.OrtCustomHandleType) callconv(.c) void) !void {
-      try Error.check(Api.ort.SetGlobalCustomJoinThreadFn.?(@ptrCast(self), @ptrCast(f)));
+      try Error.check(Api.ort.SetGlobalCustomJoinThreadFn.?(apiCast(self), apiCast(f)));
     }
 
     pub fn intraOpThreadAffinity(self: *@This(), affinity_string: [*:0]const u8) !void {
-      try Error.check(Api.ort.SetGlobalIntraOpThreadAffinity.?(@ptrCast(self), affinity_string));
+      try Error.check(Api.ort.SetGlobalIntraOpThreadAffinity.?(apiCast(self), affinity_string));
     }
 
     /// Release the ThreadingOptions object.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseThreadingOptions.?(@ptrCast(self));
+      Api.ort.ReleaseThreadingOptions.?(apiCast(self));
     }
   };
 
@@ -2858,10 +2900,11 @@ pub const TensorTypeAndShapeInfo = struct {
   }
 
   pub const C = opaque {
+    pub const Underlying = Api.c.OrtTensorTypeAndShapeInfo;
     /// Create an ::OrtTensorTypeAndShapeInfo object
     pub fn init() !*@This() {
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateTensorTypeAndShapeInfo.?(@ptrCast(&self)));
+      try Error.check(Api.ort.CreateTensorTypeAndShapeInfo.?(apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
@@ -2870,66 +2913,68 @@ pub const TensorTypeAndShapeInfo = struct {
       const out_ptr = try gpa.alloc([*:0]const u8, count);
       errdefer gpa.free(out_ptr);
 
-      try Error.check(Api.ort.GetSymbolicDimensions.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+      try Error.check(Api.ort.GetSymbolicDimensions.?(apiCast(self), apiCast(out_ptr.ptr), count));
       return out_ptr;
     }
 
     /// Set element type in ::OrtTensorTypeAndShapeInfo
     pub fn setElementType(self: *@This(), dtype: Value.Sub.Tensor.ElementDataType) !void {
-      try Error.check(Api.ort.SetTensorElementType.?(@ptrCast(self), @intFromEnum(dtype)));
+      try Error.check(Api.ort.SetTensorElementType.?(apiCast(self), @intFromEnum(dtype)));
     }
 
     /// Set shape information in ::OrtTensorTypeAndShapeInfo
     pub fn setDimensions(self: *@This(), dims: []const i64) !void {
-      try Error.check(Api.ort.SetDimensions.?(@ptrCast(self), dims.ptr, dims.len));
+      try Error.check(Api.ort.SetDimensions.?(apiCast(self), dims.ptr, dims.len));
     }
 
     /// Set shape information in ::OrtTensorTypeAndShapeInfo
     pub fn setSymbolicDimensions(self: *@This(), names: [][*:0]const u8) !void {
-      try Error.check(Api.ort.SetSymbolicDimensions.?(@ptrCast(self), @ptrCast(names.ptr), names.len));
+      try Error.check(Api.ort.SetSymbolicDimensions.?(apiCast(self), apiCast(names.ptr), names.len));
     }
 
     /// Get element type in ::OrtTensorTypeAndShapeInfo
     pub fn elementType(self: *const @This()) !Value.Sub.Tensor.ElementDataType {
       var out: Value.Sub.Tensor.ElementDataType = undefined;
-      try Error.check(Api.ort.GetTensorElementType.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetTensorElementType.?(apiCast(self), apiCast(&out)));
       return out;
     }
 
     /// Get dimension count in ::OrtTensorTypeAndShapeInfo
     pub fn dimensionsCount(self: *const @This()) !usize {
       var out: usize = 0;
-      try Error.check(Api.ort.GetDimensionsCount.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.GetDimensionsCount.?(apiCast(self), &out));
       return out;
     }
 
     /// Get dimensions in ::OrtTensorTypeAndShapeInfo
     pub fn getDimensions(self: *const @This(), out: []i64) !void {
-      try Error.check(Api.ort.GetDimensions.?(@ptrCast(self), out.ptr, out.len));
+      try Error.check(Api.ort.GetDimensions.?(apiCast(self), out.ptr, out.len));
     }
 
     /// Get total number of elements in a tensor shape
     /// For 0 dimensions, 1 is returned. If any dimension is less than 0, the result is always -1.
     pub fn shapeElementCount(self: *const @This()) !usize {
       var out: usize = 0;
-      try Error.check(Api.ort.GetTensorShapeElementCount.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.GetTensorShapeElementCount.?(apiCast(self), &out));
       return out;
     }
 
     /// Release the TensorTypeAndShapeInfo object.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseTensorTypeAndShapeInfo.?(@ptrCast(self));
+      Api.ort.ReleaseTensorTypeAndShapeInfo.?(apiCast(self));
     }
   };
 };
 
 /// Wrapper for any data type that can be passed to or returned from an ONNX session.
 pub const Value = opaque {
+  pub const Underlying = Api.c.OrtValue;
   pub const Info = opaque {
+    pub const Underlying = Api.c.OrtValueInfo;
     /// Get the value name.
     pub fn getName(self: *const @This()) ![*:0]const u8 {
       var out: ?[*:0]const u8 = null;
-      try Error.check(Api.ort.GetValueInfoName.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetValueInfoName.?(apiCast(self), apiCast(&out)));
       return out orelse "";
     }
 
@@ -2937,7 +2982,7 @@ pub const Value = opaque {
     /// The returned TypeInfo must be deinitialized by the caller.
     pub fn getTypeInfo(self: *const @This()) !*TypeInfo {
       var out: ?*TypeInfo = null;
-      try Error.check(Api.ort.GetValueInfoTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.GetValueInfoTypeInfo.?(apiCast(self), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -2947,7 +2992,7 @@ pub const Value = opaque {
     pub fn getProducer(self: *const @This()) !?struct { node: *const Node, index: usize } {
       var node: ?*const Node = null;
       var idx: usize = 0;
-      try Error.check(Api.ort.ValueInfo_GetValueProducer.?(@ptrCast(self), @ptrCast(&node), &idx));
+      try Error.check(Api.ort.ValueInfo_GetValueProducer.?(apiCast(self), apiCast(&node), &idx));
       if (node) |n| return .{ .node = n, .index = idx };
       return null;
     }
@@ -2955,28 +3000,28 @@ pub const Value = opaque {
     /// Returns a boolean indicating if the given value is a graph output.
     pub fn isGraphOutput(self: *const @This()) !bool {
       var out: bool = false;
-      try Error.check(Api.ort.ValueInfo_IsGraphOutput.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.ValueInfo_IsGraphOutput.?(apiCast(self), &out));
       return out;
     }
 
     /// Returns a boolean indicating if the given value is a required graph input.
     pub fn isRequiredGraphInput(self: *const @This()) !bool {
       var out: bool = false;
-      try Error.check(Api.ort.ValueInfo_IsRequiredGraphInput.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.ValueInfo_IsRequiredGraphInput.?(apiCast(self), &out));
       return out;
     }
 
     /// Returns a boolean indicating if the given value is an optional graph input.
     pub fn isOptionalGraphInput(self: *const @This()) !bool {
       var out: bool = false;
-      try Error.check(Api.ort.ValueInfo_IsOptionalGraphInput.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.ValueInfo_IsOptionalGraphInput.?(apiCast(self), &out));
       return out;
     }
 
     /// Returns a boolean indicating if the given value is a constant initializer.
     pub fn isConstantInitializer(self: *const @This()) !bool {
       var out: bool = false;
-      try Error.check(Api.ort.ValueInfo_IsConstantInitializer.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.ValueInfo_IsConstantInitializer.?(apiCast(self), &out));
       return out;
     }
 
@@ -2985,7 +3030,7 @@ pub const Value = opaque {
     /// Note: The returned Value lifetime is tied to the Graph/ValueInfo; do not deinit it.
     pub fn getInitializerValue(self: *const @This()) !?*const Value {
       var out: ?*const Value = null;
-      try Error.check(Api.ort.ValueInfo_GetInitializerValue.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.ValueInfo_GetInitializerValue.?(apiCast(self), apiCast(&out)));
       return out;
     }
 
@@ -2994,7 +3039,7 @@ pub const Value = opaque {
     /// Wraps OrtApi::ValueInfo_GetValueNumConsumers
     pub fn getNumConsumers(self: *const @This()) !usize {
       var count: usize = 0;
-      try Error.check(Api.ort.ValueInfo_GetValueNumConsumers.?(@ptrCast(self), &count));
+      try Error.check(Api.ort.ValueInfo_GetValueNumConsumers.?(apiCast(self), &count));
       return count;
     }
 
@@ -3005,8 +3050,8 @@ pub const Value = opaque {
     pub fn getConsumers(self: *const @This(), nodes: []*const Node, input_indices: []i64) !void {
       std.debug.assert(nodes.len == input_indices.len);
       try Error.check(Api.ort.ValueInfo_GetValueConsumers.?(
-          @ptrCast(self),
-          @ptrCast(nodes.ptr),
+          apiCast(self),
+          apiCast(nodes.ptr),
           input_indices.ptr,
           nodes.len,
       ));
@@ -3018,7 +3063,7 @@ pub const Value = opaque {
     /// Wraps OrtApi::ValueInfo_GetExternalInitializerInfo
     pub fn getExternalInitializerInfo(self: *const @This()) !?*ExternalInitializerInfo {
       var out: ?*ExternalInitializerInfo = null;
-      try Error.check(Api.ort.ValueInfo_GetExternalInitializerInfo.?(@ptrCast(self), @ptrCast(&out)));
+      try Error.check(Api.ort.ValueInfo_GetExternalInitializerInfo.?(apiCast(self), apiCast(&out)));
       return out;
     }
 
@@ -3026,7 +3071,7 @@ pub const Value = opaque {
     /// Wraps OrtApi::ValueInfo_IsFromOuterScope
     pub fn isFromOuterScope(self: *const @This()) !bool {
       var out: bool = false;
-      try Error.check(Api.ort.ValueInfo_IsFromOuterScope.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.ValueInfo_IsFromOuterScope.?(apiCast(self), &out));
       return out;
     }
 
@@ -3034,13 +3079,13 @@ pub const Value = opaque {
     /// Do not call this if the ValueInfo has been passed to a Graph (SetInputs/SetOutputs),
     /// as the Graph takes ownership.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseValueInfo.?(@ptrCast(self));
+      Api.ort.ReleaseValueInfo.?(apiCast(self));
     }
   };
 
   /// High-level categorization of ONNX objects (Tensors, Maps, Sequences, etc.).
   /// Synced with onnx TypeProto oneof
-  pub const Type = enum(c_uint) {
+  pub const Type = enum(Api.c.ONNXType) {
     UNKNOWN = @bitCast(Api.c.ONNX_TYPE_UNKNOWN),
     TENSOR = @bitCast(Api.c.ONNX_TYPE_TENSOR),
     SEQUENCE = @bitCast(Api.c.ONNX_TYPE_SEQUENCE),
@@ -3064,9 +3109,10 @@ pub const Value = opaque {
 
   pub const Sub = opaque {
     pub const Tensor = opaque {
+      pub const Underlying = Api.c.OrtValue;
       /// Defines the underlying data type of elements within a tensor (e.g., f32, i64).
       /// @intCast(Api.c copied it from TensorProto::DataType [Refer to the Api.c comment])
-      pub const ElementDataType = enum(c_uint) {
+      pub const ElementDataType = enum(Api.c.ONNXTensorElementDataType) {
         undefined = @bitCast(Api.c.ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED),
         f32 = @bitCast(Api.c.ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT), // maps to c type float
         u8 = @bitCast(Api.c.ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8), // maps to c type uint8_t
@@ -3097,7 +3143,7 @@ pub const Value = opaque {
       /// Create a tensor using a supplied ::Allocator
       pub fn init(allocator: *Allocator, shape: []const i64, dtype: Value.Sub.Tensor.ElementDataType) !*@This() {
         var self: ?*@This() = null;
-        try Error.check(Api.ort.CreateTensorAsOrtValue.?(@ptrCast(allocator), shape.ptr, shape.len, @intFromEnum(dtype), @ptrCast(&self)));
+        try Error.check(Api.ort.CreateTensorAsOrtValue.?(apiCast(allocator), shape.ptr, shape.len, @intFromEnum(dtype), apiCast(&self)));
         return self orelse error.OutOfMemory;
       }
 
@@ -3105,7 +3151,7 @@ pub const Value = opaque {
       /// p_data is owned by caller. deinit() won't release p_data.
       pub fn initWithData(info: *const Allocator.MemoryInfo, p_data: []u8, shape: []const i64, dtype: Value.Sub.Tensor.ElementDataType) !*@This() {
         var self: ?*@This() = null;
-        try Error.check(Api.ort.CreateTensorWithDataAsOrtValue.?(@ptrCast(info), @ptrCast(p_data.ptr), p_data.len, shape.ptr, shape.len, @intFromEnum(dtype), @ptrCast(&self)));
+        try Error.check(Api.ort.CreateTensorWithDataAsOrtValue.?(apiCast(info), apiCast(p_data.ptr), p_data.len, shape.ptr, shape.len, @intFromEnum(dtype), apiCast(&self)));
         return self orelse error.OutOfMemory;
       }
 
@@ -3114,13 +3160,13 @@ pub const Value = opaque {
       pub fn initWithDataAndDeleter(deleter: *Allocator, p_data: []u8, shape: []const i64, dtype: Value.Sub.Tensor.ElementDataType) !*@This() {
         var self: ?*@This() = null;
         try Error.check(Api.ort.CreateTensorWithDataAndDeleterAsOrtValue.?(
-            @ptrCast(deleter),
-            @ptrCast(p_data.ptr),
+            apiCast(deleter),
+            apiCast(p_data.ptr),
             p_data.len,
             shape.ptr,
             shape.len,
             @intFromEnum(dtype),
-            @ptrCast(&self)
+            apiCast(&self)
         ));
         return self orelse error.OutOfMemory;
       }
@@ -3129,92 +3175,94 @@ pub const Value = opaque {
       /// Used to read/write/modify the internal tensor data directly.
       pub fn getData(self: *@This(), comptime T: type) ![]T {
         var ptr: ?[*]T = null;
-        try Error.check(Api.ort.GetTensorMutableData.?(@ptrCast(self), @ptrCast(&ptr)));
+        try Error.check(Api.ort.GetTensorMutableData.?(apiCast(self), apiCast(&ptr)));
         return (ptr orelse error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
       /// Get a const pointer to the raw data inside a tensor
       pub fn getDataConst(self: *const @This(), comptime T: type) ![]const u8 {
         var ptr: ?[*]const u8 = null;
-        try Error.check(Api.ort.GetTensorData.?(@ptrCast(self), @ptrCast(&ptr)));
+        try Error.check(Api.ort.GetTensorData.?(apiCast(self), apiCast(&ptr)));
         return (ptr orelse error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
       /// Compute total size in bytes of the tensor data contained in an OrtValue.
       pub fn getSizeInBytes(self: *const @This()) !usize {
         var out: usize = 0;
-        try Error.check(Api.ort.GetTensorSizeInBytes.?(@ptrCast(self), &out));
+        try Error.check(Api.ort.GetTensorSizeInBytes.?(apiCast(self), &out));
         return out;
       }
 
       /// Get type and shape information from a tensor ::OrtValue
       pub fn getTypeAndShape(self: *const @This()) !*TensorTypeAndShapeInfo.C {
         var out: ?*TensorTypeAndShapeInfo.C = null;
-        try Error.check(Api.ort.GetTensorTypeAndShape.?(@ptrCast(self), @ptrCast(&out)));
+        try Error.check(Api.ort.GetTensorTypeAndShape.?(apiCast(self), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
       pub fn at(self: *@This(), indices: []i64, comptime T: type) !*T {
         var out: ?*T = null;
-        try Error.check(Api.ort.TensorAt.?(@ptrCast(self), indices.ptr, indices.len, @ptrCast(&out)));
+        try Error.check(Api.ort.TensorAt.?(apiCast(self), indices.ptr, indices.len, apiCast(&out)));
         return out.?; // returns pointer in memory so this can't be null
       }
 
       /// Returns a pointer to the ::OrtMemoryInfo of a Tensor
       pub fn getMemoryInfo(self: *@This()) !*const Allocator.MemoryInfo {
         var out: ?*const Allocator.MemoryInfo = null;
-        try Error.check(Api.ort.GetTensorMemoryInfo.?(@ptrCast(self), @ptrCast(&out)));
+        try Error.check(Api.ort.GetTensorMemoryInfo.?(apiCast(self), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
       pub const String = opaque {
+        pub const Underlying = Api.c.OrtValue;
         /// Get total byte length for all strings in a string tensor
         pub fn getStringDataLength(self: *@This()) !usize {
           var out: usize = 0;
-          try Error.check(Api.ort.GetStringTensorDataLength.?(@ptrCast(self), &out));
+          try Error.check(Api.ort.GetStringTensorDataLength.?(apiCast(self), &out));
           return out;
         }
 
         pub fn getStringContent(self: *@This(), out_bytes: []u8, offsets: []usize) !void {
-          try Error.check(Api.ort.GetStringTensorContent.?(@ptrCast(self), @ptrCast(out_bytes.ptr), out_bytes.len, offsets.ptr, offsets.len));
+          try Error.check(Api.ort.GetStringTensorContent.?(apiCast(self), apiCast(out_bytes.ptr), out_bytes.len, offsets.ptr, offsets.len));
         }
 
         /// Set all strings at once in a string tensor
         pub fn fillString(self: *@This(), strings: []const [*:0]const u8) !void {
-          try Error.check(Api.ort.FillStringTensor.?(@ptrCast(self), @ptrCast(strings.ptr), strings.len));
+          try Error.check(Api.ort.FillStringTensor.?(apiCast(self), apiCast(strings.ptr), strings.len));
         }
 
         pub fn getStringElementLength(self: *const @This(), index: usize) !usize {
           var out: usize = undefined;
-          try Error.check(Api.ort.GetStringTensorElementLength.?(@ptrCast(self), index, &out));
+          try Error.check(Api.ort.GetStringTensorElementLength.?(apiCast(self), index, &out));
           return out;
         }
 
         pub fn getStringElement(self: *const @This(), index: usize, out_bytes: []u8) !void {
-          try Error.check(Api.ort.GetStringTensorElement.?(@ptrCast(self), out_bytes.len, index, @ptrCast(out_bytes.ptr)));
+          try Error.check(Api.ort.GetStringTensorElement.?(apiCast(self), out_bytes.len, index, apiCast(out_bytes.ptr)));
         }
 
         /// Set a single string in a string tensor
         pub fn fillStringElement(self: *@This(), s: [*:0]const u8, index: usize) !void {
-          try Error.check(Api.ort.FillStringTensorElement.?(@ptrCast(self), s, index));
+          try Error.check(Api.ort.FillStringTensorElement.?(apiCast(self), s, index));
         }
 
         pub fn getResizedStringElementBuffer(self: *@This(), index: usize, len: usize) ![]u8 {
           var out: ?[*]u8 = null;
-          try Error.check(Api.ort.GetResizedStringTensorElementBuffer.?(@ptrCast(self), index, len, @ptrCast(&out)));
+          try Error.check(Api.ort.GetResizedStringTensorElementBuffer.?(apiCast(self), index, len, apiCast(&out)));
           return (out orelse return error.OutOfMemory)[0 .. len];
         }
       };
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
-        return @ptrCast(self_ptr);
+        return apiCast(self_ptr);
       }
     };
 
     pub const Sequence = opaque {
+      pub const Underlying = Api.c.OrtValue;
       /// Create a Value representing a Sequence (ONNX_TYPE_SEQUENCE).
       pub fn init(values: []const *const Value) !*@This() {
-        return @ptrCast(try Value._init(values, .SEQUENCE));
+        return apiCast(try Value._init(values, .SEQUENCE));
       }
 
       pub fn getValue(self: *@This(), index: c_int, allocator: *Allocator) !*Value {
@@ -3226,17 +3274,18 @@ pub const Value = opaque {
       }
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
-        return @ptrCast(self_ptr);
+        return apiCast(self_ptr);
       }
     };
 
     pub const Map = opaque {
+      pub const Underlying = Api.c.OrtValue;
       /// Create a Value representing a Map (ONNX_TYPE_MAP).
       /// keys: A Tensor Value containing keys.
       /// values: A Tensor Value containing values.
       /// The API ref-counts the inputs; you may deinit them after this call if you don't need them elsewhere.
       pub fn init(keys: *const Value, values: *const Value) !*@This() {
-        return @ptrCast(try Value._init(&[2]*const Value{ keys, values }, .MAP));
+        return apiCast(try Value._init(&[2]*const Value{ keys, values }, .MAP));
       }
 
       ///  At index 0 is key, 1 is value
@@ -3249,22 +3298,23 @@ pub const Value = opaque {
       }
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
-        return @ptrCast(self_ptr);
+        return apiCast(self_ptr);
       }
     };
 
     pub const Opaque = opaque {
+      pub const Underlying = Api.c.OrtValue;
       /// Create a Value wrapping an Opaque type.
       pub fn init(domain_name: [*:0]const u8, type_name: [*:0]const u8, data: []const u8) !*@This() {
         var out: ?*@This() = null;
-        try Error.check(Api.ort.CreateOpaqueValue.?(domain_name, type_name, data.ptr, data.len, @ptrCast(&out)));
+        try Error.check(Api.ort.CreateOpaqueValue.?(domain_name, type_name, data.ptr, data.len, apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
       /// Get data from an Opaque Value.
       /// buffer: Buffer to write data into. Must match the internal size.
       pub fn getData(self: *const @This(), comptime Out: type, out: []Out, domain_name: [*:0]const u8, type_name: [*:0]const u8) !void {
-        try Error.check(Api.ort.GetOpaqueValue.?(domain_name, type_name, @ptrCast(self), @ptrCast(out.ptr), out.len * @sizeOf(Out)));
+        try Error.check(Api.ort.GetOpaqueValue.?(domain_name, type_name, apiCast(self), apiCast(out.ptr), out.len * @sizeOf(Out)));
       }
 
       pub fn getDataAlloc(self: *const @This(), comptime Out: type, len: usize, gpa: std.mem.Allocator, domain_name: [*:0]const u8, type_name: [*:0]const u8) ![]u8 {
@@ -3275,14 +3325,15 @@ pub const Value = opaque {
       }
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
-        return @ptrCast(self_ptr);
+        return apiCast(self_ptr);
       }
     };
 
     pub const SparseTensor = opaque {
+      pub const Underlying = Api.c.OrtValue;
       /// Identifies the storage format for sparse tensors (COO, CSR, or Block Sparse).
       /// These types are synced with internal SparseFormatFlags
-      pub const Format = enum(c_uint) {
+      pub const Format = enum(Api.c.OrtSparseFormat) {
         SPARSE_UNDEFINED = @intCast(Api.c.ORT_SPARSE_UNDEFINED),
         SPARSE_COO = @intCast(Api.c.ORT_SPARSE_COO),
         SPARSE_CSRC = @intCast(Api.c.ORT_SPARSE_CSRC),
@@ -3291,7 +3342,7 @@ pub const Value = opaque {
 
       /// Identifies which specific indices buffer of a sparse tensor is being queried.
       /// Enum allows to query sparse tensor indices
-      pub const IndicesFormat = enum(c_uint) {
+      pub const IndicesFormat = enum(Api.c.OrtSparseIndicesFormat) {
         COO_INDICES = @intCast(Api.c.ORT_SPARSE_COO_INDICES),
         CSR_INNER_INDICES = @intCast(Api.c.ORT_SPARSE_CSR_INNER_INDICES),
         CSR_OUTER_INDICES = @intCast(Api.c.ORT_SPARSE_CSR_OUTER_INDICES),
@@ -3300,21 +3351,21 @@ pub const Value = opaque {
 
       pub fn init(allocator: *Allocator, shape: []const i64, dtype: Value.Sub.Tensor.ElementDataType) !*@This() {
         var self: ?*@This() = null;
-        try Error.check(Api.ort.CreateSparseTensorAsOrtValue.?(@ptrCast(allocator), shape.ptr, shape.len, @intFromEnum(dtype), @ptrCast(&self)));
+        try Error.check(Api.ort.CreateSparseTensorAsOrtValue.?(apiCast(allocator), shape.ptr, shape.len, @intFromEnum(dtype), apiCast(&self)));
         return self orelse error.OutOfMemory;
       }
 
       pub fn initWithValues(info: *const Allocator.MemoryInfo, p_data: ?[*]u8, dense_shape: []i64, shape: []const i64, dtype: Value.Sub.Tensor.ElementDataType) !*@This() {
         var self: ?*@This() = null;
         try Error.check(Api.ort.CreateSparseTensorWithValuesAsOrtValue.?(
-            @ptrCast(info),
-            @ptrCast(p_data),
+            apiCast(info),
+            apiCast(p_data),
             dense_shape.ptr,
             dense_shape.len,
             shape.ptr,
             shape.len,
             @intFromEnum(dtype),
-            @ptrCast(&self)
+            apiCast(&self)
         ));
         return self orelse error.OutOfMemory;
       }
@@ -3327,10 +3378,10 @@ pub const Value = opaque {
       /// indices: Pointer to int64 indices.
       pub fn fillCoo(self: *@This(), mem_info: *const Allocator.MemoryInfo, values_shape: []const i64, values: [*]const u8, indices: []const i64) !void {
         try Error.check(Api.ort.FillSparseTensorCoo.?(
-          @ptrCast(self),
-          @ptrCast(mem_info),
+          apiCast(self),
+          apiCast(mem_info),
           values_shape.ptr, values_shape.len,
-          @ptrCast(values),
+          apiCast(values),
           indices.ptr, indices.len
         ));
       }
@@ -3345,10 +3396,10 @@ pub const Value = opaque {
         outer_indices: []const i64,
       ) !void {
         try Error.check(Api.ort.FillSparseTensorCsr.?(
-          @ptrCast(self),
-          @ptrCast(mem_info),
+          apiCast(self),
+          apiCast(mem_info),
           values_shape.ptr, values_shape.len,
-          @ptrCast(values),
+          apiCast(values),
           inner_indices.ptr, inner_indices.len,
           outer_indices.ptr, outer_indices.len
         ));
@@ -3363,10 +3414,10 @@ pub const Value = opaque {
         indices: []const i32,
       ) !void {
         try Error.check(Api.ort.FillSparseTensorBlockSparse.?(
-          @ptrCast(self),
-          @ptrCast(mem_info),
+          apiCast(self),
+          apiCast(mem_info),
           values_shape.ptr, values_shape.len,
-          @ptrCast(values),
+          apiCast(values),
           indices_shape.ptr, indices_shape.len,
           indices.ptr
         ));
@@ -3375,23 +3426,23 @@ pub const Value = opaque {
       /// Use user-supplied COO indices.
       /// indices: User buffer. Must outlive Value.
       pub fn useCooIndices(self: *@This(), indices: []i64) !void {
-        try Error.check(Api.ort.UseCooIndices.?(@ptrCast(self), indices.ptr, indices.len));
+        try Error.check(Api.ort.UseCooIndices.?(apiCast(self), indices.ptr, indices.len));
       }
 
       /// Use user-supplied CSR indices.
       pub fn useCsrIndices(self: *@This(), inner: []i64, outer: []i64) !void {
-        try Error.check(Api.ort.UseCsrIndices.?(@ptrCast(self), inner.ptr, inner.len, outer.ptr, outer.len));
+        try Error.check(Api.ort.UseCsrIndices.?(apiCast(self), inner.ptr, inner.len, outer.ptr, outer.len));
       }
 
       /// Use user-supplied Block Sparse indices.
       pub fn useBlockSparseIndices(self: *@This(), indices_shape: []const i64, indices: []i32) !void {
-        try Error.check(Api.ort.UseBlockSparseIndices.?(@ptrCast(self), indices_shape.ptr, indices_shape.len, indices.ptr));
+        try Error.check(Api.ort.UseBlockSparseIndices.?(apiCast(self), indices_shape.ptr, indices_shape.len, indices.ptr));
       }
 
       /// Get the sparse format of the value.
       pub fn getSparseFormat(self: *const @This()) !*Format {
         var out: ?*Format = null;
-        try Error.check(Api.ort.GetSparseTensorFormat.?(@ptrCast(self), @ptrCast(&out)));
+        try Error.check(Api.ort.GetSparseTensorFormat.?(apiCast(self), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
@@ -3399,14 +3450,14 @@ pub const Value = opaque {
       /// Caller must deinit the returned TensorTypeAndShapeInfo.
       pub fn getValuesTypeAndShape(self: *@This()) !*TensorTypeAndShapeInfo.C {
         var out: ?*TensorTypeAndShapeInfo.C = null;
-        try Error.check(Api.ort.GetSparseTensorValuesTypeAndShape.?(@ptrCast(self), @ptrCast(&out)));
+        try Error.check(Api.ort.GetSparseTensorValuesTypeAndShape.?(apiCast(self), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
       /// Get pointer to sparse values.
       pub fn getValues(self: *@This()) ![*]const u8 {
         var ptr: ?[*]const u8 = null;
-        try Error.check(Api.ort.GetSparseTensorValues.?(@ptrCast(self), @ptrCast(&ptr)));
+        try Error.check(Api.ort.GetSparseTensorValues.?(apiCast(self), apiCast(&ptr)));
         return ptr orelse error.OutOfMemory;
       }
 
@@ -3414,7 +3465,7 @@ pub const Value = opaque {
       /// Caller must deinit the returned TensorTypeAndShapeInfo.
       pub fn getIndicesTypeShape(self: *const @This(), format: IndicesFormat) !*TensorTypeAndShapeInfo.C {
         var out: ?*TensorTypeAndShapeInfo.C = null;
-        try Error.check(Api.ort.GetSparseTensorIndicesTypeShape.?(@ptrCast(self), @intFromEnum(format), @ptrCast(&out)));
+        try Error.check(Api.ort.GetSparseTensorIndicesTypeShape.?(apiCast(self), @intFromEnum(format), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
@@ -3422,32 +3473,33 @@ pub const Value = opaque {
       pub fn getIndices(self: *const @This(), format: IndicesFormat) ![]u8 {
         var ptr: ?[*]u8 = null;
         var count: usize = 0;
-        try Error.check(Api.ort.GetSparseTensorIndices.?(@ptrCast(self), @intFromEnum(format), &count, @ptrCast(&ptr)));
+        try Error.check(Api.ort.GetSparseTensorIndices.?(apiCast(self), @intFromEnum(format), &count, apiCast(&ptr)));
         return (ptr orelse return error.OutOfMemory)[0 .. count];
       }
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
-        return @ptrCast(self_ptr);
+        return apiCast(self_ptr);
       }
     };
 
     pub const Optional = opaque {
+      pub const Underlying = Api.c.OrtValue;
       /// Returns true if an optional type OrtValue has an element
       pub fn hasValue(self: *@This()) !bool {
         var out: c_int = 0;
-        try Error.check(Api.ort.HasValue.?(@ptrCast(self), &out));
+        try Error.check(Api.ort.HasValue.?(apiCast(self), &out));
         return out != 0;
       }
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
-        return @ptrCast(self_ptr);
+        return apiCast(self_ptr);
       }
     };
   };
 
   pub fn _init(values: []const *const Value, t: Type) !*@This() {
     var out: ?*@This() = null;
-    try Error.check(Api.ort.CreateValue.?(@ptrCast(values.ptr), values.len, @intFromEnum(t), @ptrCast(&out)));
+    try Error.check(Api.ort.CreateValue.?(apiCast(values.ptr), values.len, @intFromEnum(t), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -3466,27 +3518,27 @@ pub const Value = opaque {
   pub fn asUnion(self_ptr: anytype) AsUnion(@TypeOf(self_ptr)) {
     const U = AsUnion(@TypeOf(self_ptr));
     switch (try self_ptr.getType()) {
-      inline else => |t| return @unionInit(U, @tagName(t), @ptrCast(self_ptr)),
+      inline else => |t| return @unionInit(U, @tagName(t), apiCast(self_ptr)),
     }
     unreachable;
   }
 
   /// You may use inline switching to get a comptime value for t and then cast to appropriate type
   pub fn asType(self: *@This(), comptime t: Type) t.Type() {
-    return @ptrCast(self);
+    return apiCast(self);
   }
 
   /// Get TypeInfo.Type of an ::OrtValue
   pub fn getType(self: *const @This()) !Type {
     var out: Type = undefined;
-    try Error.check(Api.ort.GetValueType.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.GetValueType.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
   /// Get type information of an OrtValue
   pub fn getTypeInfo(self: *@This()) !*TypeInfo {
     var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.GetTypeInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.GetTypeInfo.?(apiCast(self), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -3496,7 +3548,7 @@ pub const Value = opaque {
   /// The returned Value must be deinitialized by the caller.
   pub fn _getValue(self: *const @This(), index: c_int, allocator: *Allocator) !*@This() {
     var out: ?*Value = null;
-    try Error.check(Api.ort.GetValue.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+    try Error.check(Api.ort.GetValue.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -3505,27 +3557,27 @@ pub const Value = opaque {
   /// If Sequence: returns number of elements.
   pub fn _getCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.GetValueCount.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.GetValueCount.?(apiCast(self), &out));
     return out;
   }
 
   /// Return true if this ::OrtValue is a tensor type
   pub fn isTensor(self: *const @This()) !bool {
     var out: c_int = 0;
-    try Error.check(Api.ort.IsTensor.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.IsTensor.?(apiCast(self), &out));
     return out != 0;
   }
 
   /// Returns true if this ::OrtValue is a SparseTensor
   pub fn isSparseTensor(self: *const @This()) !bool {
     var out: c_int = 0;
-    try Error.check(Api.ort.IsSparseTensor.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.IsSparseTensor.?(apiCast(self), &out));
     return out != 0;
   }
 
   /// Release the OrtValue.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseValue.?(@ptrCast(self));
+    Api.ort.ReleaseValue.?(apiCast(self));
   }
 
   /// Warning: This uses Ep.api
@@ -3536,11 +3588,12 @@ pub const Value = opaque {
   ///
   /// since Version 1.23.
   pub fn getMemoryDevice(self: *const @This()) !*const Allocator.MemoryDevice {
-    return @ptrCast(Ep.api.underlying.Value_GetMemoryDevice.?(@ptrCast(self)) orelse return error.OutOfMemory);
+    return apiCast(Ep.api.underlying.Value_GetMemoryDevice.?(apiCast(self)) orelse return error.OutOfMemory);
   }
 };
 
 pub const Node = opaque {
+  pub const Underlying = Api.c.OrtNode;
   /// Create an OrtNode to add to an OrtGraph.
   ///
   /// Create attributes with `OpAttr.init`. OrtOpAttr instances are copied by the node
@@ -3567,13 +3620,13 @@ pub const Node = opaque {
       operator_name,
       domain_name,
       node_name,
-      @ptrCast(input_names.ptr),
+      apiCast(input_names.ptr),
       input_names.len,
-      @ptrCast(output_names.ptr),
+      apiCast(output_names.ptr),
       output_names.len,
-      @ptrCast(attributes.ptr),
+      apiCast(attributes.ptr),
       attributes.len,
-      @ptrCast(&out),
+      apiCast(&out),
     ));
     return out orelse error.OutOfMemory;
   }
@@ -3582,42 +3635,42 @@ pub const Node = opaque {
   /// The node's identifier is only unique in the node's parent graph.
   pub fn getId(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Node_GetId.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetId.?(apiCast(self), &out));
     return out;
   }
 
   /// Returns a node's name. Can be an empty string.
   pub fn getName(self: *const @This()) ![*:0]const u8 {
     var out: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.Node_GetName.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Node_GetName.?(apiCast(self), apiCast(&out)));
     return out orelse "";
   }
 
   /// Returns a node's operator type (e.g., "Conv").
   pub fn getOperatorType(self: *const @This()) ![*:0]const u8 {
     var out: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.Node_GetOperatorType.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Node_GetOperatorType.?(apiCast(self), apiCast(&out)));
     return out orelse "";
   }
 
   /// Returns a node's domain name.
   pub fn getDomain(self: *const @This()) ![*:0]const u8 {
     var out: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.Node_GetDomain.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Node_GetDomain.?(apiCast(self), apiCast(&out)));
     return out orelse "";
   }
 
   /// Get the opset version in which the given node's operator type was first defined.
   pub fn getSinceVersion(self: *const @This()) !c_int {
     var out: c_int = 0;
-    try Error.check(Api.ort.Node_GetSinceVersion.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetSinceVersion.?(apiCast(self), &out));
     return out;
   }
 
   /// Returns the number of node inputs.
   pub fn getInputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Node_GetNumInputs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetNumInputs.?(apiCast(self), &out));
     return out;
   }
 
@@ -3627,14 +3680,14 @@ pub const Node = opaque {
     const count = try self.getInputCount();
     const out_ptr = try gpa.alloc(*const Value.Info, count);
     errdefer gpa.free(out_ptr);
-    try Error.check(Api.ort.Node_GetInputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Node_GetInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Returns the number of node outputs.
   pub fn getOutputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Node_GetNumOutputs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetNumOutputs.?(apiCast(self), &out));
     return out;
   }
 
@@ -3645,14 +3698,14 @@ pub const Node = opaque {
     const out_ptr = try gpa.alloc(*const Value.Info, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Node_GetOutputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Node_GetOutputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Returns the number of node implicit inputs.
   pub fn getImplicitInputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Node_GetNumImplicitInputs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetNumImplicitInputs.?(apiCast(self), &out));
     return out;
   }
 
@@ -3663,14 +3716,14 @@ pub const Node = opaque {
     const out_ptr = try gpa.alloc(*const Value.Info, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Node_GetImplicitInputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Node_GetImplicitInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Returns the number of node attributes.
   pub fn getAttributeCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Node_GetNumAttributes.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetNumAttributes.?(apiCast(self), &out));
     return out;
   }
 
@@ -3681,7 +3734,7 @@ pub const Node = opaque {
     const out_ptr = try gpa.alloc(*const OpAttr, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Node_GetAttributes.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Node_GetAttributes.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
@@ -3692,7 +3745,7 @@ pub const Node = opaque {
     // ORT returns ORT_NOT_FOUND if the attribute doesn't exist, which we translate to returning null
     // However, if we blindly check(...), it will return error.NotFound.
     // We can use Error.check, catch NotFound, and return null.
-    Error.check(Api.ort.Node_GetAttributeByName.?(@ptrCast(self), name, @ptrCast(&out))) catch |err| switch (err) {
+    Error.check(Api.ort.Node_GetAttributeByName.?(apiCast(self), name, apiCast(&out))) catch |err| switch (err) {
       Error.Set.OrtErrorNotFound => return null,
       else => return err,
     };
@@ -3703,7 +3756,7 @@ pub const Node = opaque {
   /// Returns the number of subgraphs contained by the given node.
   pub fn getSubgraphCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Node_GetNumSubgraphs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Node_GetNumSubgraphs.?(apiCast(self), &out));
     return out;
   }
 
@@ -3722,7 +3775,7 @@ pub const Node = opaque {
     const names = try allocator.alloc(?[*:0]const u8, count);
     defer allocator.free(names);
 
-    try Error.check(Api.ort.Node_GetSubgraphs.?(@ptrCast(self), @ptrCast(graphs.ptr), count, @ptrCast(names.ptr)));
+    try Error.check(Api.ort.Node_GetSubgraphs.?(apiCast(self), apiCast(graphs.ptr), count, apiCast(names.ptr)));
 
     const out = try allocator.alloc(SubgraphInfo, count);
     for (0..count) |i| {
@@ -3735,7 +3788,7 @@ pub const Node = opaque {
   /// Can return null if the Node was created without an owning graph.
   pub fn getGraph(self: *const @This()) !?*const Graph {
     var out: ?*const Graph = null;
-    try Error.check(Api.ort.Node_GetGraph.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Node_GetGraph.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
@@ -3743,23 +3796,24 @@ pub const Node = opaque {
   /// Returns null if the node has not been assigned to any execution provider yet.
   pub fn getEpName(self: *const @This()) !?[*:0]const u8 {
     var out: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.Node_GetEpName.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Node_GetEpName.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
   /// Release an OrtNode if it was not added to an OrtGraph.
   /// Do not call this if the node has been added to a graph.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseNode.?(@ptrCast(self));
+    Api.ort.ReleaseNode.?(apiCast(self));
   }
 };
 
 pub const Graph = opaque {
+  pub const underlying = Api.c.OrtGraph;
   /// Create an empty OrtGraph.
   /// Note: Requires Model Editor API initialization.
   pub fn init() !*@This() {
     var out: ?*@This() = null;
-    try Error.check(Api.editor.underlying.CreateGraph.?(@ptrCast(&out)));
+    try Error.check(Api.editor.underlying.CreateGraph.?(apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -3768,8 +3822,8 @@ pub const Graph = opaque {
   /// The OrtGraph takes ownership of the Value.Info instances; do NOT call deinit on them.
   pub fn setInputs(self: *@This(), inputs: []*Value.Info) !void {
     try Error.check(Api.editor.underlying.SetGraphInputs.?(
-      @ptrCast(self), 
-      @ptrCast(inputs.ptr), 
+      apiCast(self), 
+      apiCast(inputs.ptr), 
       inputs.len
     ));
   }
@@ -3779,8 +3833,8 @@ pub const Graph = opaque {
   /// The OrtGraph takes ownership of the Value.Info instances; do NOT call deinit on them.
   pub fn setOutputs(self: *@This(), outputs: []*Value.Info) !void {
     try Error.check(Api.editor.underlying.SetGraphOutputs.?(
-      @ptrCast(self), 
-      @ptrCast(outputs.ptr), 
+      apiCast(self), 
+      apiCast(outputs.ptr), 
       outputs.len
     ));
   }
@@ -3793,9 +3847,9 @@ pub const Graph = opaque {
   /// data_is_external: Set to true if the data is external (e.g. mmap) and should not be copied.
   pub fn addInitializer(self: *@This(), name: [*:0]const u8, tensor: *Value, data_is_external: bool) !void {
     try Error.check(Api.editor.underlying.AddInitializerToGraph.?(
-      @ptrCast(self),
+      apiCast(self),
       name,
-      @ptrCast(tensor),
+      apiCast(tensor),
       data_is_external
     ));
   }
@@ -3804,15 +3858,15 @@ pub const Graph = opaque {
   /// The OrtGraph takes ownership of OrtNode; do NOT call deinit on it.
   pub fn addNode(self: *@This(), node: *Node) !void {
     try Error.check(Api.editor.underlying.AddNodeToGraph.?(
-      @ptrCast(self),
-      @ptrCast(node)
+      apiCast(self),
+      apiCast(node)
     ));
   }
 
   /// Returns the graph's name.
   pub fn getName(self: *const @This()) ![*:0]const u8 {
     var out: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.Graph_GetName.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Graph_GetName.?(apiCast(self), apiCast(&out)));
     return out orelse "";
   }
 
@@ -3821,22 +3875,22 @@ pub const Graph = opaque {
   /// Do NOT free the returned string.
   pub fn getModelPath(self: *const @This()) !Utils.Path {
     var out: ?Utils.Path = null;
-    try Error.check(Api.ort.Graph_GetModelPath.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Graph_GetModelPath.?(apiCast(self), apiCast(&out)));
     // in error case, we return a pointer to a static empty string
-    return out orelse @ptrCast(&[_]Utils.PathChar{0});
+    return out orelse apiCast(&[_]Utils.PathChar{0});
   }
 
   /// Returns the ONNX IR version.
   pub fn getOnnxIRVersion(self: *const @This()) !i64 {
     var out: i64 = 0;
-    try Error.check(Api.ort.Graph_GetOnnxIRVersion.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Graph_GetOnnxIRVersion.?(apiCast(self), &out));
     return out;
   }
 
   /// Returns the number of operator sets that the graph's model uses.
   pub fn getOperatorSetCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Graph_GetNumOperatorSets.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Graph_GetNumOperatorSets.?(apiCast(self), &out));
     return out;
   }
 
@@ -3857,9 +3911,9 @@ pub const Graph = opaque {
     defer gpa.free(versions);
 
     try Error.check(Api.ort.Graph_GetOperatorSets.?(
-      @ptrCast(self), 
-      @ptrCast(domains.ptr), 
-      @ptrCast(versions.ptr), 
+      apiCast(self), 
+      apiCast(domains.ptr), 
+      apiCast(versions.ptr), 
       count
     ));
 
@@ -3874,7 +3928,7 @@ pub const Graph = opaque {
   /// Returns the number of graph inputs.
   pub fn getInputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Graph_GetNumInputs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Graph_GetNumInputs.?(apiCast(self), &out));
     return out;
   }
 
@@ -3885,14 +3939,14 @@ pub const Graph = opaque {
     const out_ptr = try gpa.alloc(*const Value.Info, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Graph_GetInputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Graph_GetInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Returns the number of graph outputs.
   pub fn getOutputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Graph_GetNumOutputs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Graph_GetNumOutputs.?(apiCast(self), &out));
     return out;
   }
 
@@ -3903,14 +3957,14 @@ pub const Graph = opaque {
     const out_ptr = try gpa.alloc(*const Value.Info, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Graph_GetOutputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Graph_GetOutputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Returns the number of graph initializers.
   pub fn getInitializerCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Graph_GetNumInitializers.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Graph_GetNumInitializers.?(apiCast(self), &out));
     return out;
   }
 
@@ -3922,14 +3976,14 @@ pub const Graph = opaque {
     const out_ptr = try gpa.alloc(*const Value.Info, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Graph_GetInitializers.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Graph_GetInitializers.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Returns the number of graph nodes.
   pub fn getNodeCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.Graph_GetNumNodes.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.Graph_GetNumNodes.?(apiCast(self), &out));
     return out;
   }
 
@@ -3940,7 +3994,7 @@ pub const Graph = opaque {
     const out_ptr = try gpa.alloc(*const Node, count);
     errdefer gpa.free(out_ptr);
 
-    try Error.check(Api.ort.Graph_GetNodes.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.Graph_GetNodes.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
@@ -3948,7 +4002,7 @@ pub const Graph = opaque {
   /// Returns null if this is a top-level graph.
   pub fn getParentNode(self: *const @This()) !?*const Node {
     var out: ?*const Node = null;
-    try Error.check(Api.ort.Graph_GetParentNode.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Graph_GetParentNode.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
@@ -3958,10 +4012,10 @@ pub const Graph = opaque {
   pub fn getGraphView(self: *const @This(), nodes: []*const Node) !*@This() {
     var out: ?*@This() = null;
     try Error.check(Api.ort.Graph_GetGraphView.?(
-      @ptrCast(self),
-      @ptrCast(nodes.ptr),
+      apiCast(self),
+      apiCast(nodes.ptr),
       nodes.len,
-      @ptrCast(&out)
+      apiCast(&out)
     ));
     return out orelse error.OutOfMemory;
   }
@@ -3970,17 +4024,18 @@ pub const Graph = opaque {
   /// The returned metadata must be released by the caller.
   pub fn getModelMetadata(self: *const @This()) !*Model.Metadata {
     var out: ?*Model.Metadata = null;
-    try Error.check(Api.ort.Graph_GetModelMetadata.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.Graph_GetModelMetadata.?(apiCast(self), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Release an OrtGraph.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseGraph.?(@ptrCast(self));
+    Api.ort.ReleaseGraph.?(apiCast(self));
   }
 };
 
 pub const Model = opaque {
+  pub const Underlying = Api.c.OrtModel;
   /// Create an OrtModel.
   ///
   /// This can be used to build a new model, or to augment an existing model.
@@ -3994,10 +4049,10 @@ pub const Model = opaque {
     std.debug.assert(domain_names.len == opset_versions.len);
     var out: ?*@This() = null;
     try Error.check(Api.editor.underlying.CreateModel.?(
-      @ptrCast(domain_names.ptr),
-      @ptrCast(opset_versions.ptr),
+      apiCast(domain_names.ptr),
+      apiCast(opset_versions.ptr),
       domain_names.len,
-      @ptrCast(&out)
+      apiCast(&out)
     ));
     return out orelse error.OutOfMemory;
   }
@@ -4007,17 +4062,18 @@ pub const Model = opaque {
   /// The OrtModel takes ownership of the OrtGraph; do NOT call deinit on the graph.
   pub fn addGraph(self: *@This(), graph: *Graph) !void {
     try Error.check(Api.editor.underlying.AddGraphToModel.?(
-      @ptrCast(self),
-      @ptrCast(graph)
+      apiCast(self),
+      apiCast(graph)
     ));
   }
 
   /// Release an OrtModel.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseModel.?(@ptrCast(self));
+    Api.ort.ReleaseModel.?(apiCast(self));
   }
 
   pub const Metadata = opaque {
+    pub const Underlying = Api.c.OrtModelMetadata;
     /// Get `producer name` from an ::OrtModelMetadata
     ///
     /// allocator: The allocator used to allocate the returned string.
@@ -4026,9 +4082,9 @@ pub const Model = opaque {
     pub fn getProducerName(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
       try Error.check(Api.ort.ModelMetadataGetProducerName.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&out)
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -4041,9 +4097,9 @@ pub const Model = opaque {
     pub fn getGraphName(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
       try Error.check(Api.ort.ModelMetadataGetGraphName.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&out)
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -4056,9 +4112,9 @@ pub const Model = opaque {
     pub fn getDomain(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
       try Error.check(Api.ort.ModelMetadataGetDomain.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&out)
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -4071,9 +4127,9 @@ pub const Model = opaque {
     pub fn getDescription(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
       try Error.check(Api.ort.ModelMetadataGetDescription.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&out)
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -4086,9 +4142,9 @@ pub const Model = opaque {
     pub fn getGraphDescription(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
       try Error.check(Api.ort.ModelMetadataGetGraphDescription.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&out)
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -4102,10 +4158,10 @@ pub const Model = opaque {
     pub fn lookupCustomMetadataMap(self: *const @This(), allocator: *Allocator, key: [*:0]const u8) !?[*:0]u8 {
       var out: ?[*:0]u8 = null;
       try Error.check(Api.ort.ModelMetadataLookupCustomMetadataMap.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
+        apiCast(self),
+        apiCast(allocator),
         key,
-        @ptrCast(&out)
+        apiCast(&out)
       ));
       return out;
     }
@@ -4114,7 +4170,7 @@ pub const Model = opaque {
     pub fn getVersion(self: *const @This()) !i64 {
       var out: i64 = 0;
       try Error.check(Api.ort.ModelMetadataGetVersion.?(
-        @ptrCast(self),
+        apiCast(self),
         &out
       ));
       return out;
@@ -4131,9 +4187,9 @@ pub const Model = opaque {
       var num_keys: i64 = 0;
       
       try Error.check(Api.ort.ModelMetadataGetCustomMetadataMapKeys.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&keys_ptr),
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&keys_ptr),
         &num_keys
       ));
 
@@ -4145,11 +4201,12 @@ pub const Model = opaque {
 
     /// Release an ::OrtModelMetadata.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseModelMetadata.?(@ptrCast(self));
+      Api.ort.ReleaseModelMetadata.?(apiCast(self));
     }
   };
 
   pub const CompilationOptions = opaque {
+    pub const Underlying = Api.c.OrtModelCompilationOptions;
     /// Creates an OrtModelCompilationOptions object from an existing OrtSessionOptions object.
     ///
     /// env: The OrtEnv.
@@ -4160,8 +4217,8 @@ pub const Model = opaque {
       var out: ?*@This() = null;
       try Error.check(Api.compiler.underlying.CreateModelCompilationOptionsFromSessionOptions.?(
         Api.env.underlying,
-        @ptrCast(session_options), // Assuming Session.Options is opaque
-        @ptrCast(&out)
+        apiCast(session_options), // Assuming Session.Options is opaque
+        apiCast(&out)
       ));
       return out orelse error.OutOfMemory;
     }
@@ -4169,7 +4226,7 @@ pub const Model = opaque {
     /// Sets the file path to the input ONNX model to compile.
     pub fn setInputModelPath(self: *@This(), path: Utils.Path) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetInputModelPath.?(
-        @ptrCast(self),
+        apiCast(self),
         path
       ));
     }
@@ -4177,8 +4234,8 @@ pub const Model = opaque {
     /// Sets the buffer that stores the bytes of the loaded ONNX model to compile.
     pub fn setInputModelFromBuffer(self: *@This(), buffer: []const u8) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetInputModelFromBuffer.?(
-        @ptrCast(self),
-        @ptrCast(buffer.ptr),
+        apiCast(self),
+        apiCast(buffer.ptr),
         buffer.len
       ));
     }
@@ -4186,7 +4243,7 @@ pub const Model = opaque {
     /// Sets the file path for the output ONNX model.
     pub fn setOutputModelPath(self: *@This(), path: Utils.Path) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelPath.?(
-        @ptrCast(self),
+        apiCast(self),
         path
       ));
     }
@@ -4200,18 +4257,18 @@ pub const Model = opaque {
       var ptr: ?*anyopaque = null;
       var len: usize = 0;
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelBuffer.?(
-        @ptrCast(self),
-        @ptrCast(allocator),
-        @ptrCast(&ptr),
+        apiCast(self),
+        apiCast(allocator),
+        apiCast(&ptr),
         &len
       ));
-      return @as([*]u8, @ptrCast(ptr orelse return &.{}))[0..len];
+      return @as([*]u8, apiCast(ptr orelse return &.{}))[0..len];
     }
 
     /// Enables or disables the embedding of EPContext binary data.
     pub fn setEpContextEmbedMode(self: *@This(), embed: bool) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetEpContextEmbedMode.?(
-        @ptrCast(self),
+        apiCast(self),
         embed
       ));
     }
@@ -4219,7 +4276,7 @@ pub const Model = opaque {
     /// Sets flags representing one or more boolean options to enable.
     pub fn setFlags(self: *@This(), flags: Api.compiler.Flags) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetFlags.?(
-        @ptrCast(self),
+        apiCast(self),
         @bitCast(flags)
       ));
     }
@@ -4227,7 +4284,7 @@ pub const Model = opaque {
     /// Set the graph optimization level.
     pub fn setGraphOptimizationLevel(self: *@This(), level: Session.GraphOptimizationLevel) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetGraphOptimizationLevel.?(
-        @ptrCast(self),
+        apiCast(self),
         @intFromEnum(level)
       ));
     }
@@ -4237,7 +4294,7 @@ pub const Model = opaque {
     pub fn compile(self: *const @This()) !void {
       try Error.check(Api.compiler.underlying.CompileModel.?(
         Api.env.underlying,
-        @ptrCast(self)
+        apiCast(self)
       ));
     }
 
@@ -4245,7 +4302,7 @@ pub const Model = opaque {
     /// Wraps OrtCompileApi::ModelCompilationOptions_SetEpContextBinaryInformation
     pub fn setEpContextBinaryInformation(self: *@This(), output_dir: Utils.Path, model_name: Utils.Path) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetEpContextBinaryInformation.?(
-          @ptrCast(self),
+          apiCast(self),
           output_dir,
           model_name,
       ));
@@ -4255,7 +4312,7 @@ pub const Model = opaque {
     /// Wraps OrtCompileApi::ModelCompilationOptions_SetOutputModelExternalInitializersFile
     pub fn setOutputModelExternalInitializersFile(self: *@This(), path: Utils.Path, threshold: usize) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelExternalInitializersFile.?(
-          @ptrCast(self),
+          apiCast(self),
           path,
           threshold,
       ));
@@ -4265,7 +4322,7 @@ pub const Model = opaque {
     /// Wraps OrtCompileApi::ModelCompilationOptions_SetOutputModelWriteFunc
     pub fn setOutputModelWriteFunc(self: *@This(), interface: WriteInterface) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelWriteFunc.?(
-          @ptrCast(self),
+          apiCast(self),
           interface.write_fn,
           interface.ptr,
       ));
@@ -4275,7 +4332,7 @@ pub const Model = opaque {
     /// Wraps OrtCompileApi::ModelCompilationOptions_SetOutputModelGetInitializerLocationFunc
     pub fn setOutputModelGetInitializerLocationFunc(self: *@This(), interface: LocationInterface) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelGetInitializerLocationFunc.?(
-          @ptrCast(self),
+          apiCast(self),
           interface.loc_fn,
           interface.ptr,
       ));
@@ -4293,17 +4350,17 @@ pub const Model = opaque {
         const Sub = @typeInfo(Ptr).pointer.child;
 
         return .{
-          .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
+          .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(instance),
           .write_fn = struct {
             fn wrapper(ctx: ?*anyopaque, buffer: ?*const anyopaque, len: usize) callconv(.c) ?*Api.c.OrtStatus {
-              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(@alignCast(ctx.?));
-              const data: []const u8 = @as([*]const u8, @ptrCast(buffer.?))[0..len];
+              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(@alignCast(ctx.?));
+              const data: []const u8 = @as([*]const u8, apiCast(buffer.?))[0..len];
 
               if (self.write(data)) |_| {
                 return null; // Success
               } else |err| {
                 const msg = std.fmt.allocPrintSentinel(std.heap.c_allocator, "Zig Write Error: {s}", .{@errorName(err)}, 0) catch "Zig Write Error";
-                return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), msg.ptr));
+                return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), msg.ptr));
               }
             }
           }.wrapper,
@@ -4323,7 +4380,7 @@ pub const Model = opaque {
         const Sub = @typeInfo(Ptr).pointer.child;
 
         return .{
-          .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
+          .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(instance),
           .loc_fn = struct {
             fn wrapper(
               ctx: ?*anyopaque,
@@ -4332,11 +4389,11 @@ pub const Model = opaque {
               info: ?*const Api.c.ExternalInitializerInfo,
               out: ?*?*Api.c.ExternalInitializerInfo,
             ) callconv(.c) ?*Api.c.OrtStatus {
-              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(@alignCast(ctx.?));
+              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(@alignCast(ctx.?));
 
               // Wrap call to Zig logic
-              if (self.getLocation(name.?, @ptrCast(val.?), @ptrCast(info))) |maybe_new_info| {
-                out.?.* = @ptrCast(maybe_new_info);
+              if (self.getLocation(name.?, apiCast(val.?), apiCast(info))) |maybe_new_info| {
+                out.?.* = apiCast(maybe_new_info);
                 return null;
               } else |err| {
                 return Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err));
@@ -4349,14 +4406,15 @@ pub const Model = opaque {
 
     /// Release the options object.
     pub fn deinit(self: *@This()) void {
-      Api.compiler.underlying.ReleaseModelCompilationOptions.?(@ptrCast(self));
+      Api.compiler.underlying.ReleaseModelCompilationOptions.?(apiCast(self));
     }
   };
 };
 
 pub const OpAttr = opaque {
+  pub const underlying = Api.c.OrtOpAttr;
   /// Defines the type of data stored in an Operator Attribute.
-  pub const Type = enum(c_uint) {
+  pub const Type = enum(Api.c.OrtOpAttrType) {
     UNDEFINED = @bitCast(Api.c.ORT_OP_ATTR_UNDEFINED),
     INT = @bitCast(Api.c.ORT_OP_ATTR_INT),
     INTS = @bitCast(Api.c.ORT_OP_ATTR_INTS),
@@ -4381,7 +4439,7 @@ pub const OpAttr = opaque {
       data, 
       len, 
       @intFromEnum(type_), 
-      @ptrCast(&out)
+      apiCast(&out)
     ));
     return out orelse error.OutOfMemory;
   }
@@ -4411,14 +4469,14 @@ pub const OpAttr = opaque {
   /// Get the attribute name.
   pub fn getName(self: *const @This()) ![*:0]const u8 {
     var out: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.OpAttr_GetName.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.OpAttr_GetName.?(apiCast(self), apiCast(&out)));
     return out orelse "";
   }
 
   /// Get the attribute type.
   pub fn getType(self: *const @This()) !Type {
     var out: Type = undefined;
-    try Error.check(Api.ort.OpAttr_GetType.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.OpAttr_GetType.?(apiCast(self), apiCast(&out)));
     return out;
   }
 
@@ -4426,7 +4484,7 @@ pub const OpAttr = opaque {
   /// Returns a new Value that must be deinitialized.
   pub fn getTensor(self: *const @This()) !*Value {
     var out: ?*Value = null;
-    try Error.check(Api.ort.OpAttr_GetTensorAttributeAsOrtValue.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.OpAttr_GetTensorAttributeAsOrtValue.?(apiCast(self), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -4436,9 +4494,9 @@ pub const OpAttr = opaque {
   pub fn read(self: *const @This(), type_: Type, out_data: []u8) !usize {
     var size: usize = 0;
     try Error.check(Api.ort.ReadOpAttr.?(
-        @ptrCast(self), 
+        apiCast(self), 
         @intFromEnum(type_), 
-        @ptrCast(out_data.ptr), 
+        apiCast(out_data.ptr), 
         out_data.len, 
         &size
     ));
@@ -4447,14 +4505,15 @@ pub const OpAttr = opaque {
 
   /// Release the attribute.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseOpAttr.?(@ptrCast(self));
+    Api.ort.ReleaseOpAttr.?(apiCast(self));
   }
 };
 
 pub const Session = struct {
+  pub const Underlying = Api.c.OrtSession;
   /// Graph optimization level
   /// Refer to https://www.onnxruntime.ai/docs/performance/graph-optimizations.html#graph-optimization-levels for an in-depth understanding of the Graph Optimization Levels.
-  pub const GraphOptimizationLevel = enum(c_uint) {
+  pub const GraphOptimizationLevel = enum(Api.c.GraphOptimizationLevel) {
     NONE = @bitCast(Api.c.ORT_DISABLE_ALL),
     BASIC = @bitCast(Api.c.ORT_ENABLE_BASIC),
     EXTENDED = @bitCast(Api.c.ORT_ENABLE_EXTENDED),
@@ -4463,7 +4522,7 @@ pub const Session = struct {
   };
 
   /// Dictates if operators are executed one after another or in parallel where possible.
-  pub const ExecutionMode = enum(c_uint) {
+  pub const ExecutionMode = enum(Api.c.ExecutionMode) {
     SEQUENTIAL = @bitCast(Api.c.ORT_SEQUENTIAL),
     PARALLEL = @bitCast(Api.c.ORT_PARALLEL),
   };
@@ -4540,43 +4599,44 @@ pub const Session = struct {
     }
 
     pub const C = opaque {
+      pub const Underlying = Api.c.OrtSessionOptions;
       pub fn init() !*@This() {
         var self: ?*@This() = null;
-        try Error.check(Api.ort.CreateSessionOptions.?(@ptrCast(&self)));
+        try Error.check(Api.ort.CreateSessionOptions.?(apiCast(&self)));
         return self orelse error.OutOfMemory;
       }
 
       pub fn addFreeDimensionOverride(self: *@This(), denotation: [*:0]const u8, dim: i64) !void {
-        try Error.check(Api.ort.AddFreeDimensionOverride.?(@ptrCast(self), denotation, dim));
+        try Error.check(Api.ort.AddFreeDimensionOverride.?(apiCast(self), denotation, dim));
       }
 
       /// Override symbolic dimensions by name.
       pub fn addFreeDimensionOverrideByName(self: *@This(), name: [*:0]const u8, dim: i64) !void {
-        try Error.check(Api.ort.AddFreeDimensionOverrideByName.?(@ptrCast(self), name, dim));
+        try Error.check(Api.ort.AddFreeDimensionOverrideByName.?(apiCast(self), name, dim));
       }
 
       pub fn clone(self: *const @This()) !*@This() {
         var retval: ?*@This() = null;
-        try Error.check(Api.ort.CloneSessionOptions.?(@ptrCast(self), @ptrCast(&retval)));
+        try Error.check(Api.ort.CloneSessionOptions.?(apiCast(self), apiCast(&retval)));
         return retval orelse error.OutOfMemory;
       }
 
       pub fn deinit(self: *@This()) void {
-        Api.ort.ReleaseSessionOptions.?(@ptrCast(self));
+        Api.ort.ReleaseSessionOptions.?(apiCast(self));
       }
 
       /// Enable Custom Operators (from onnxruntime-extensions).
       pub fn enableOrtCustomOps(self: *@This()) !void {
-        try Error.check(Api.ort.EnableOrtCustomOps.?(@ptrCast(self)));
+        try Error.check(Api.ort.EnableOrtCustomOps.?(apiCast(self)));
       }
 
       /// Replace initialized Tensors with external data.
       pub fn addExternalInitializers(self: *@This(), names: []const [*:0]const u8, values: []const *const Value) !void {
         std.debug.assert(names.len == values.len);
         try Error.check(Api.ort.AddExternalInitializers.?(
-            @ptrCast(self),
-            @ptrCast(names.ptr),
-            @ptrCast(values.ptr),
+            apiCast(self),
+            apiCast(names.ptr),
+            apiCast(values.ptr),
             names.len
         ));
       }
@@ -4584,12 +4644,12 @@ pub const Session = struct {
       /// Checks if the given session configuration entry exists.
       pub fn hasConfigEntry(self: *const @This(), key: [*:0]const u8) !bool {
         var out: c_int = 0;
-        try Error.check(Api.ort.HasSessionConfigEntry.?(@ptrCast(self), key, &out));
+        try Error.check(Api.ort.HasSessionConfigEntry.?(apiCast(self), key, &out));
         return out != 0;
       }
 
       pub fn _getConfigEntry(self: *const @This(), key: [*:0]const u8, out_ptr: [*:0]u8, out_len: *usize) !void {
-        try Error.check(Api.ort.GetSessionConfigEntry.?(@ptrCast(self), @ptrCast(key), @ptrCast(out_ptr), out_len));
+        try Error.check(Api.ort.GetSessionConfigEntry.?(apiCast(self), apiCast(key), apiCast(out_ptr), out_len));
       }
 
       /// Get a session configuration value.
@@ -4597,126 +4657,126 @@ pub const Session = struct {
       pub fn getConfigEntry(self: *const @This(), key: [*:0]const u8, gpa: std.mem.Allocator) ![:0]u8 {
         var size: usize = 0;
         // First call to get size
-        self._getConfigEntry(key, @ptrCast(@constCast(&[_]u8{})), &size) catch {};
+        self._getConfigEntry(key, apiCast(@constCast(&[_]u8{})), &size) catch {};
         const buf = try gpa.alloc(u8, size);
         errdefer gpa.free(buf);
 
-        try self._getConfigEntry(key, @ptrCast(buf.ptr), &size);
+        try self._getConfigEntry(key, apiCast(buf.ptr), &size);
         std.debug.assert(buf.len == size);
-        return @as([*:0]u8, @ptrCast(buf.ptr))[0 .. size - 1: 0];
+        return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
       }
 
       /// Register custom ops using a registration function name.
       /// The library must be linked or loaded.
       pub fn registerCustomOpsUsingFunction(self: *@This(), function_name: [*:0]const u8) !void {
-        try Error.check(Api.ort.RegisterCustomOpsUsingFunction.?(@ptrCast(self), function_name));
+        try Error.check(Api.ort.RegisterCustomOpsUsingFunction.?(apiCast(self), function_name));
       }
 
       /// Disable per-session thread pools (use global env thread pools).
       pub fn disablePerSessionThreads(self: *@This()) !void {
-        try Error.check(Api.ort.DisablePerSessionThreads.?(@ptrCast(self)));
+        try Error.check(Api.ort.DisablePerSessionThreads.?(apiCast(self)));
       }
 
       pub fn setOptimizationLevel(self: *@This(), level: GraphOptimizationLevel) !void {
-        try Error.check(Api.ort.SetSessionGraphOptimizationLevel.?(@ptrCast(self), @intFromEnum(level)));
+        try Error.check(Api.ort.SetSessionGraphOptimizationLevel.?(apiCast(self), @intFromEnum(level)));
       }
 
       pub fn setOptimizedModelPath(self: *@This(), path: [*:0]const u8) !void {
-        try Error.check(Api.ort.SetOptimizedModelFilePath.?(@ptrCast(self), path));
+        try Error.check(Api.ort.SetOptimizedModelFilePath.?(apiCast(self), path));
       }
 
       pub fn setExecutionMode(self: *@This(), mode: ExecutionMode) !void {
-        try Error.check(Api.ort.SetSessionExecutionMode.?(@ptrCast(self), @intFromEnum(mode)));
+        try Error.check(Api.ort.SetSessionExecutionMode.?(apiCast(self), @intFromEnum(mode)));
       }
 
       pub fn setProfiling(self: *@This(), status: ?Utils.Path) !void {
         if (status) |str| {
-          try Error.check(Api.ort.EnableProfiling.?(@ptrCast(self), str));
+          try Error.check(Api.ort.EnableProfiling.?(apiCast(self), str));
         } else {
-          try Error.check(Api.ort.DisableProfiling.?(@ptrCast(self)));
+          try Error.check(Api.ort.DisableProfiling.?(apiCast(self)));
         }
       }
 
       pub fn setMemoryPatternOptimization(self: *@This(), enabled: bool) !void {
         if (enabled) {
-          try Error.check(Api.ort.EnableMemPattern.?(@ptrCast(self)));
+          try Error.check(Api.ort.EnableMemPattern.?(apiCast(self)));
         } else {
-          try Error.check(Api.ort.DisableMemPattern.?(@ptrCast(self)));
+          try Error.check(Api.ort.DisableMemPattern.?(apiCast(self)));
         }
       }
 
       pub fn setCpuMemoryArena(self: *@This(), enabled: bool) !void {
         if (enabled) {
-          try Error.check(Api.ort.EnableCpuMemArena.?(@ptrCast(self)));
+          try Error.check(Api.ort.EnableCpuMemArena.?(apiCast(self)));
         } else {
-          try Error.check(Api.ort.DisableCpuMemArena.?(@ptrCast(self)));
+          try Error.check(Api.ort.DisableCpuMemArena.?(apiCast(self)));
         }
       }
 
       /// Set whether to use deterministic compute.
       pub fn setDeterministicCompute(self: *@This(), value: bool) !void {
-        try Error.check(Api.ort.SetDeterministicCompute.?(@ptrCast(self), value));
+        try Error.check(Api.ort.SetDeterministicCompute.?(apiCast(self), value));
       }
 
       /// Set user logging function.
       pub fn setUserLoggingFunction(self: *@This(), logging_interface: Logging.Interface) !void {
         try Error.check(Api.ort.SetUserLoggingFunction.?(
-            @ptrCast(self),
+            apiCast(self),
             logging_interface.log_fn,
             logging_interface.ptr
         ));
       }
 
       pub fn setLogId(self: *@This(), id: [*:0]const u8) !void {
-        try Error.check(Api.ort.SetSessionLogId.?(@ptrCast(self), id));
+        try Error.check(Api.ort.SetSessionLogId.?(apiCast(self), id));
       }
 
       pub fn setLogVerbosity(self: *@This(), level: Logging.Level) !void {
-        try Error.check(Api.ort.SetSessionLogVerbosityLevel.?(@ptrCast(self), @bitCast(@intFromEnum(level))));
+        try Error.check(Api.ort.SetSessionLogVerbosityLevel.?(apiCast(self), @bitCast(@intFromEnum(level))));
       }
 
       pub fn setLogSeverity(self: *@This(), level: Logging.Level) !void {
-        try Error.check(Api.ort.SetSessionLogSeverityLevel.?(@ptrCast(self), @bitCast(@intFromEnum(level))));
+        try Error.check(Api.ort.SetSessionLogSeverityLevel.?(apiCast(self), @bitCast(@intFromEnum(level))));
       }
 
       pub fn setIntraOpThreads(self: *@This(), threads: c_int) !void {
-        try Error.check(Api.ort.SetIntraOpNumThreads.?(@ptrCast(self), threads));
+        try Error.check(Api.ort.SetIntraOpNumThreads.?(apiCast(self), threads));
       }
 
       pub fn setInterOpThreads(self: *@This(), threads: c_int) !void {
-        try Error.check(Api.ort.SetInterOpNumThreads.?(@ptrCast(self), threads));
+        try Error.check(Api.ort.SetInterOpNumThreads.?(apiCast(self), threads));
       }
 
       pub fn addCustomOpDomain(self: *@This(), domain: *Op.Custom.Domain) !void {
-        try Error.check(Api.ort.AddCustomOpDomain.?(@ptrCast(self), @ptrCast(domain)));
+        try Error.check(Api.ort.AddCustomOpDomain.?(apiCast(self), apiCast(domain)));
       }
 
       /// Wraps OrtApi::AddSessionConfigEntry
       pub fn addConfigEntry(self: *@This(), key: [*:0]const u8, value: [*:0]const u8) !void {
-        try Error.check(Api.ort.AddSessionConfigEntry.?(@ptrCast(self), key, value));
+        try Error.check(Api.ort.AddSessionConfigEntry.?(apiCast(self), key, value));
       }
 
       /// Wraps OrtApi::AddInitializer
       /// Note: The lifetime of the OrtValue and the underlying buffer must outlive the session object
       pub fn addInitializer(self: *@This(), name: [*:0]const u8, val: *const Value) !void {
-        try Error.check(Api.ort.AddInitializer.?(@ptrCast(self), name, @ptrCast(val)));
+        try Error.check(Api.ort.AddInitializer.?(apiCast(self), name, apiCast(val)));
       }
 
       /// Wraps OrtApi::SessionOptionsAppendExecutionProvider_CUDA_V2
       pub fn appendExecutionProviderCUDA(self: *@This(), options: *const ProviderOptions.CUDA) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CUDA_V2.?(@ptrCast(self), @ptrCast(options)));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CUDA_V2.?(apiCast(self), apiCast(options)));
       }
 
       /// Wraps OrtApi::SessionOptionsAppendExecutionProvider_TensorRT_V2
       pub fn appendExecutionProviderTensorRT(self: *@This(), options: *const ProviderOptions.TensorRT) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_TensorRT_V2.?(@ptrCast(self), @ptrCast(options)));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_TensorRT_V2.?(apiCast(self), apiCast(options)));
       }
 
       /// Append Execution Providers (Generic)
       /// Options can be a struct or tuple with [:0]const u8 or [*:0]const u8 values
       pub fn appendExecutionProvider(self: *@This(), name: [:0]const u8, options: anytype) !void {
         const converted = Utils.createOptionsKVL(options, .cstr);
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider.?(@ptrCast(self), name.ptr, converted.keys(), converted.vals(), converted.len));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider.?(apiCast(self), name.ptr, converted.keys(), converted.vals(), converted.len));
       }
 
       /// Loads a shared library (.dll on windows, .so on linux, etc) named 'library_name' and looks for this entry point:
@@ -4727,7 +4787,7 @@ pub const Session = struct {
       /// library handle is released. If no OrtSession is created, then the library handle is released when the provided
       /// OrtSessionOptions is released.
       pub fn registerCustomOpsLibrary(self: *@This(), path: Utils.Path) !void {
-        try Error.check(Api.ort.RegisterCustomOpsLibrary_V2.?(@ptrCast(self), path));
+        try Error.check(Api.ort.RegisterCustomOpsLibrary_V2.?(apiCast(self), path));
       }
 
       /// Deprecated: Use registerCustomOpsLibrary
@@ -4741,7 +4801,7 @@ pub const Session = struct {
       /// session options are destroyed, or if an error occurs and it is non null.
       pub fn registerCustomOpsLibrary_DeprecatedV1(self: *@This(), path: Utils.Path) !*anyopaque {
         var retval: ?*anyopaque = undefined;
-        try Error.check(Api.ort.RegisterCustomOpsLibrary.?(@ptrCast(self), path, @ptrCast(&retval)));
+        try Error.check(Api.ort.RegisterCustomOpsLibrary.?(apiCast(self), path, apiCast(&retval)));
         return retval orelse error.OutOfMemory;
       }
 
@@ -4760,15 +4820,15 @@ pub const Session = struct {
         std.debug.assert(buffers.len == lengths.len);
 
         try Error.check(Api.ort.AddExternalInitializersFromFilesInMemory.?(
-            @ptrCast(self),
-            @ptrCast(names.ptr),
-            @ptrCast(buffers.ptr),
-            @ptrCast(lengths.ptr),
+            apiCast(self),
+            apiCast(names.ptr),
+            apiCast(buffers.ptr),
+            apiCast(lengths.ptr),
             names.len
         ));
       }
 
-      pub const ExecutionProviderDevicePolicy = enum(c_uint) {
+      pub const ExecutionProviderDevicePolicy = enum(Api.c.OrtExecutionProviderDevicePolicy) {
         Default = @bitCast(Api.c.OrtExecutionProviderDevicePolicy_DEFAULT),
         PreferCPU = @bitCast(Api.c.OrtExecutionProviderDevicePolicy_PREFER_CPU),
         PreferNPU = @bitCast(Api.c.OrtExecutionProviderDevicePolicy_PREFER_NPU),
@@ -4780,39 +4840,39 @@ pub const Session = struct {
 
       /// Set the execution provider selection policy for the session.
       pub fn setEpSelectionPolicy(self: *@This(), policy: ExecutionProviderDevicePolicy) !void {
-        try Error.check(Api.ort.SessionOptionsSetEpSelectionPolicy.?(@ptrCast(self), @intFromEnum(policy)));
+        try Error.check(Api.ort.SessionOptionsSetEpSelectionPolicy.?(apiCast(self), @intFromEnum(policy)));
       }
 
       /// Set the execution provider selection policy delegate for the session.
       pub fn setEpSelectionPolicyDelegate(self: *@This(), delegate: Api.c.EpSelectionDelegate, state: ?*anyopaque) !void {
-        try Error.check(Api.ort.SessionOptionsSetEpSelectionPolicyDelegate.?(@ptrCast(self), delegate, state));
+        try Error.check(Api.ort.SessionOptionsSetEpSelectionPolicyDelegate.?(apiCast(self), delegate, state));
       }
 
       /// Set custom thread creation function.
       pub fn setCustomCreateThreadFn(self: *@This(), create_fn: Api.c.OrtCustomCreateThreadFn) !void {
-        try Error.check(Api.ort.SessionOptionsSetCustomCreateThreadFn.?(@ptrCast(self), create_fn));
+        try Error.check(Api.ort.SessionOptionsSetCustomCreateThreadFn.?(apiCast(self), create_fn));
       }
 
       /// Set creation options for custom thread.
       pub fn setCustomThreadCreationOptions(self: *@This(), options_ptr: ?*anyopaque) !void {
-        try Error.check(Api.ort.SessionOptionsSetCustomThreadCreationOptions.?(@ptrCast(self), options_ptr));
+        try Error.check(Api.ort.SessionOptionsSetCustomThreadCreationOptions.?(apiCast(self), options_ptr));
       }
 
       /// Set custom thread join function.
       pub fn setCustomJoinThreadFn(self: *@This(), join_fn: Api.c.OrtCustomJoinThreadFn) !void {
-        try Error.check(Api.ort.SessionOptionsSetCustomJoinThreadFn.?(@ptrCast(self), join_fn));
+        try Error.check(Api.ort.SessionOptionsSetCustomJoinThreadFn.?(apiCast(self), join_fn));
       }
 
       /// Sets load cancellation flag to abort session loading process.
       pub fn setLoadCancellationFlag(self: *@This(), cancel: bool) !void {
-        try Error.check(Api.ort.SessionOptionsSetLoadCancellationFlag.?(@ptrCast(self), cancel));
+        try Error.check(Api.ort.SessionOptionsSetLoadCancellationFlag.?(apiCast(self), cancel));
       }
 
       /// Get Session configuration entries.
       /// Returns a new KeyValuePairs instance that must be deinitialized.
       pub fn getConfigEntries(self: *const @This()) !*KeyValuePairs {
         var out: ?*KeyValuePairs = null;
-        try Error.check(Api.ort.GetSessionOptionsConfigEntries.?(@ptrCast(self), @ptrCast(&out)));
+        try Error.check(Api.ort.GetSessionOptionsConfigEntries.?(apiCast(self), apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
@@ -4825,9 +4885,9 @@ pub const Session = struct {
         const converted = Utils.createOptionsKVL(options, .cstr);
 
         try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_V2.?(
-            @ptrCast(self),
+            apiCast(self),
             Api.env.underlying,
-            @ptrCast(ep_devices.ptr),
+            apiCast(ep_devices.ptr),
             ep_devices.len,
             converted.keys(),
             converted.vals(),
@@ -4842,7 +4902,7 @@ pub const Session = struct {
         const count = if (options) |o| o.getKeyValues()[0].len else 0;
 
         try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_OpenVINO_V2.?(
-            @ptrCast(self), keys, values, count
+            apiCast(self), keys, values, count
         ));
       }
 
@@ -4853,43 +4913,43 @@ pub const Session = struct {
         const count = if (options) |o| o.getKeyValues()[0].len else 0;
 
         try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_VitisAI.?(
-            @ptrCast(self), keys, values, count
+            apiCast(self), keys, values, count
         ));
       }
 
       /// Append DNNL provider.
       pub fn appendExecutionProviderDnnl(self: *@This(), options: *const Api.c.OrtDnnlProviderOptions) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_Dnnl.?(@ptrCast(self), options));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_Dnnl.?(apiCast(self), options));
       }
 
       /// Append CANN provider.
       pub fn appendExecutionProviderCANN(self: *@This(), options: *const Api.c.OrtCANNProviderOptions) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CANN.?(@ptrCast(self), options));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CANN.?(apiCast(self), options));
       }
 
       /// Legacy: Append CUDA provider.
       pub fn appendExecutionProviderCUDALegacy(self: *@This(), device_id: c_int) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CUDA.?(@ptrCast(self), device_id));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_CUDA.?(apiCast(self), device_id));
       }
 
       /// Legacy: Append ROCM provider.
       pub fn appendExecutionProviderROCMLegacy(self: *@This(), device_id: c_int) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_ROCM.?(@ptrCast(self), device_id));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_ROCM.?(apiCast(self), device_id));
       }
 
       /// Legacy: Append TensorRT provider.
       pub fn appendExecutionProviderTensorRTLegacy(self: *@This(), device_id: c_int) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_TensorRT.?(@ptrCast(self), device_id));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_TensorRT.?(apiCast(self), device_id));
       }
 
       /// Legacy: Append MIGraphX provider.
       pub fn appendExecutionProviderMIGraphXLegacy(self: *@This(), device_id: c_int) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_MIGraphX.?(@ptrCast(self), device_id));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_MIGraphX.?(apiCast(self), device_id));
       }
 
       /// Legacy: Append OpenVINO provider (Struct Options).
       pub fn appendExecutionProviderOpenVINOLegacy(self: *@This(), options: *const Api.c.OrtOpenVINOProviderOptions) !void {
-        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_OpenVINO.?(@ptrCast(self), options));
+        try Error.check(Api.ort.SessionOptionsAppendExecutionProvider_OpenVINO.?(apiCast(self), options));
       }
     };
   };
@@ -4899,8 +4959,8 @@ pub const Session = struct {
     try Error.check(Api.ort.CreateSession.?(
       Api.env.underlying,
       path,
-      @ptrCast(options),
-      @ptrCast(&self),
+      apiCast(options),
+      apiCast(&self),
     ));
     return self orelse error.OutOfMemory;
   }
@@ -4909,10 +4969,10 @@ pub const Session = struct {
     var self: ?*@This() = null;
     try Error.check(Api.ort.CreateSessionFromArray.?(
       Api.env.underlying,
-      @ptrCast(data.ptr),
+      apiCast(data.ptr),
       data.len,
-      @ptrCast(options),
-      @ptrCast(&self),
+      apiCast(options),
+      apiCast(&self),
     ));
     return self orelse error.OutOfMemory;
   }
@@ -4926,9 +4986,9 @@ pub const Session = struct {
     try Error.check(Api.ort.CreateSessionWithPrepackedWeightsContainer.?(
         Api.env.underlying,
         model_path,
-        @ptrCast(options),
-        @ptrCast(container),
-        @ptrCast(&out)
+        apiCast(options),
+        apiCast(container),
+        apiCast(&out)
     ));
     return out orelse error.OutOfMemory;
   }
@@ -4942,11 +5002,11 @@ pub const Session = struct {
     var out: ?*@This() = null;
     try Error.check(Api.ort.CreateSessionFromArrayWithPrepackedWeightsContainer.?(
         Api.env.underlying,
-        @ptrCast(model_data.ptr),
+        apiCast(model_data.ptr),
         model_data.len,
-        @ptrCast(options),
-        @ptrCast(container),
-        @ptrCast(&out)
+        apiCast(options),
+        apiCast(container),
+        apiCast(&out)
     ));
     return out orelse error.OutOfMemory;
   }
@@ -4955,64 +5015,64 @@ pub const Session = struct {
   pub fn setEpDynamicOptions(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
     std.debug.assert(keys.len == values.len);
     try Error.check(Api.ort.SetEpDynamicOptions.?(
-        @ptrCast(self),
-        @ptrCast(keys.ptr),
-        @ptrCast(values.ptr),
+        apiCast(self),
+        apiCast(keys.ptr),
+        apiCast(values.ptr),
         keys.len
     ));
   }
 
   pub fn getInputCount(self: *const @This()) !usize {
     var retval: usize = undefined;
-    try Error.check(Api.ort.SessionGetInputCount.?(@ptrCast(self), &retval));
+    try Error.check(Api.ort.SessionGetInputCount.?(apiCast(self), &retval));
     return retval;
   }
 
   pub fn getOutputCount(self: *const @This()) !usize {
     var retval: usize = undefined;
-    try Error.check(Api.ort.SessionGetOutputCount.?(@ptrCast(self), &retval));
+    try Error.check(Api.ort.SessionGetOutputCount.?(apiCast(self), &retval));
     return retval;
   }
 
   pub fn overridableInitializerCount(self: *const @This()) !usize {
     var retval: usize = undefined;
-    try Error.check(Api.ort.SessionGetOverridableInitializerCount.?(@ptrCast(self), &retval));
+    try Error.check(Api.ort.SessionGetOverridableInitializerCount.?(apiCast(self), &retval));
     return retval;
   }
 
   pub fn inputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
     var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.SessionGetInputTypeInfo.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetInputTypeInfo.?(apiCast(self), index, apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn outputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
     var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.SessionGetOutputTypeInfo.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetOutputTypeInfo.?(apiCast(self), index, apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn overridableInitializerTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
     var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.SessionGetOverridableInitializerTypeInfo.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetOverridableInitializerTypeInfo.?(apiCast(self), index, apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn inputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
     var out: ?[*:0]u8 = null;
-    try Error.check(Api.ort.SessionGetInputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetInputName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn outputName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
     var out: ?[*:0]u8 = null;
-    try Error.check(Api.ort.SessionGetOutputName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetOutputName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn overridableInitializerName(self: *const @This(), index: usize, allocator: *Allocator) ![*:0]u8 {
     var out: ?[*:0]u8 = null;
-    try Error.check(Api.ort.SessionGetOverridableInitializerName.?(@ptrCast(self), index, @ptrCast(allocator), @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetOverridableInitializerName.?(apiCast(self), index, apiCast(allocator), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -5033,14 +5093,14 @@ pub const Session = struct {
     std.debug.assert(input_names.len == input_values.len);
     std.debug.assert(output_names.len == output_values.len);
     try Error.check(Api.ort.Run.?(
-      @ptrCast(self),
-      @ptrCast(run_options),
-      @ptrCast(input_names.ptr),
-      @ptrCast(input_values.ptr),
+      apiCast(self),
+      apiCast(run_options),
+      apiCast(input_names.ptr),
+      apiCast(input_values.ptr),
       input_values.len,
-      @ptrCast(output_names.ptr),
+      apiCast(output_names.ptr),
       output_values.len,
-      @ptrCast(output_values.ptr),
+      apiCast(output_values.ptr),
     ));
   }
 
@@ -5059,45 +5119,45 @@ pub const Session = struct {
     std.debug.assert(output_names.len == outputs.len);
 
     try Error.check(Api.ort.RunAsync.?(
-        @ptrCast(self),
-        @ptrCast(run_options),
-        @ptrCast(input_names.ptr),
-        @ptrCast(inputs.ptr),
+        apiCast(self),
+        apiCast(run_options),
+        apiCast(input_names.ptr),
+        apiCast(inputs.ptr),
         inputs.len,
-        @ptrCast(output_names.ptr),
+        apiCast(output_names.ptr),
         output_names.len,
-        @ptrCast(outputs.ptr),
+        apiCast(outputs.ptr),
         &struct {pub fn callback(ctx: ?*anyopaque, vptr: [*c]?*Api.c.OrtValue, vlen: usize, status: Api.c.OrtStatusPtr) callconv(.c) void {
-          @as(@TypeOf(callback_ctx_ptr), @alignCast(@ptrCast(ctx))).callback(@as([*]?*Value, @ptrCast(vptr))[0 .. vlen], @as(*Error.Status, @ptrCast(status)));
+          @as(@TypeOf(callback_ctx_ptr), @alignCast(apiCast(ctx))).callback(@as([*]?*Value, apiCast(vptr))[0 .. vlen], @as(*Error.Status, apiCast(status)));
         }}.callback,
-        @ptrCast(callback_ctx_ptr),
+        apiCast(callback_ctx_ptr),
     ));
   }
 
   /// Run the model using IoBinding. Wraps OrtApi::RunWithBinding
   pub fn runWithBinding(self: *@This(), run_options: ?*const RunOptions, binding: *const IoBinding) !void {
-    try Error.check(Api.ort.RunWithBinding.?(@ptrCast(self), @ptrCast(run_options), @ptrCast(binding)));
+    try Error.check(Api.ort.RunWithBinding.?(apiCast(self), apiCast(run_options), apiCast(binding)));
   }
 
   /// End profiling and return a copy of the profiling file name.
   /// The returned string is allocated using the provided allocator and must be freed by the caller.
   pub fn endProfiling(self: *@This(), allocator: *Allocator) ![*:0]u8 {
     var out: ?[*:0]u8 = null;
-    try Error.check(Api.ort.SessionEndProfiling.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&out)));
+    try Error.check(Api.ort.SessionEndProfiling.?(apiCast(self), apiCast(allocator), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Get profiling start time in nanoseconds
   pub fn getProfilingStartTimeNs(self: *const @This()) !u64 {
     var out: u64 = 0;
-    try Error.check(Api.ort.SessionGetProfilingStartTimeNs.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.SessionGetProfilingStartTimeNs.?(apiCast(self), &out));
     return out;
   }
 
   /// Get model metadata
   pub fn getModelMetadata(self: *const @This()) !*Model.Metadata {
     var out: ?*Model.Metadata = null;
-    try Error.check(Api.ort.SessionGetModelMetadata.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.SessionGetModelMetadata.?(apiCast(self), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -5105,7 +5165,7 @@ pub const Session = struct {
     const count = try self.getInputCount();
     const out_ptr = try allocator.alloc(*const Allocator.MemoryInfo, count);
     errdefer allocator.free(out_ptr);
-    try Error.check(Api.ort.SessionGetMemoryInfoForInputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.SessionGetMemoryInfoForInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
@@ -5113,7 +5173,7 @@ pub const Session = struct {
     const count = try self.getOutputCount();
     const out_ptr = try allocator.alloc(*const Allocator.MemoryInfo, count);
     errdefer allocator.free(out_ptr);
-    try Error.check(Api.ort.SessionGetMemoryInfoForOutputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.SessionGetMemoryInfoForOutputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
@@ -5121,59 +5181,60 @@ pub const Session = struct {
     const count = try self.getInputCount();
     const out_ptr = try allocator.alloc(?*const Ep.Device, count);
     errdefer allocator.free(out_ptr);
-    try Error.check(Api.ort.SessionGetEpDeviceForInputs.?(@ptrCast(self), @ptrCast(out_ptr.ptr), count));
+    try Error.check(Api.ort.SessionGetEpDeviceForInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
     return out_ptr;
   }
 
   /// Release the Session object.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseSession.?(@ptrCast(self));
+    Api.ort.ReleaseSession.?(apiCast(self));
   }
 };
 
 pub const RunOptions = opaque {
+  pub const Underlying = Api.c.OrtRunOptions;
   pub fn init() !*@This() {
     var out: ?*@This() = null;
-    try Error.check(Api.ort.CreateRunOptions.?(@ptrCast(&out)));
+    try Error.check(Api.ort.CreateRunOptions.?(apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn setLogVerbosityLevel(self: *@This(), level: c_int) !void {
-    try Error.check(Api.ort.RunOptionsSetRunLogVerbosityLevel.?(@ptrCast(self), level));
+    try Error.check(Api.ort.RunOptionsSetRunLogVerbosityLevel.?(apiCast(self), level));
   }
 
   pub fn setLogSeverityLevel(self: *@This(), level: Logging.Level) !void {
-    try Error.check(Api.ort.RunOptionsSetRunLogSeverityLevel.?(@ptrCast(self), @bitCast(@intFromEnum(level))));
+    try Error.check(Api.ort.RunOptionsSetRunLogSeverityLevel.?(apiCast(self), @bitCast(@intFromEnum(level))));
   }
 
   pub fn setRunTag(self: *@This(), tag: [*:0]const u8) !void {
-    try Error.check(Api.ort.RunOptionsSetRunTag.?(@ptrCast(self), tag));
+    try Error.check(Api.ort.RunOptionsSetRunTag.?(apiCast(self), tag));
   }
 
   pub fn getLogVerbosityLevel(self: *const @This()) !c_int {
     var level: c_int = 0;
-    try Error.check(Api.ort.RunOptionsGetRunLogVerbosityLevel.?(@ptrCast(self), &level));
+    try Error.check(Api.ort.RunOptionsGetRunLogVerbosityLevel.?(apiCast(self), &level));
     return level;
   }
 
   pub fn getLogSeverityLevel(self: *const @This()) !Logging.Level {
     var level: c_int = 0;
-    try Error.check(Api.ort.RunOptionsGetRunLogSeverityLevel.?(@ptrCast(self), &level));
+    try Error.check(Api.ort.RunOptionsGetRunLogSeverityLevel.?(apiCast(self), &level));
     return @enumFromInt(level);
   }
 
   pub fn getRunTag(self: *const @This()) !?[*:0]const u8 {
     var tag: ?[*:0]const u8 = null;
-    try Error.check(Api.ort.RunOptionsGetRunTag.?(@ptrCast(self), @ptrCast(&tag)));
+    try Error.check(Api.ort.RunOptionsGetRunTag.?(apiCast(self), apiCast(&tag)));
     return tag;
   }
 
   pub fn setTerminate(self: *@This()) !void {
-    try Error.check(Api.ort.RunOptionsSetTerminate.?(@ptrCast(self)));
+    try Error.check(Api.ort.RunOptionsSetTerminate.?(apiCast(self)));
   }
 
   pub fn unsetTerminate(self: *@This()) !void {
-    try Error.check(Api.ort.RunOptionsUnsetTerminate.?(@ptrCast(self)));
+    try Error.check(Api.ort.RunOptionsUnsetTerminate.?(apiCast(self)));
   }
 
   /// Wrapper around ::OrtLoraAdapter
@@ -5182,12 +5243,13 @@ pub const RunOptions = opaque {
   /// LoRA (Low-Rank Adaptation) allow you to modify the behavior of a base model without retraining it.
   /// This allows you to hot-swap fine-tuned weights during inference
   pub const LoraAdapter = opaque {
+    pub const Underlying = Api.c.OrtLoraAdapter;
     /// Wraps OrtApi::CreateLoraAdapter
     /// adapter_path: Path to the LoRA adapter file.
     /// allocator: Optional allocator. If null, data stays on CPU until inference requires it on device.
     pub fn init(adapter_path: Utils.Path, allocator: *Allocator) !*@This() {
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateLoraAdapter.?(adapter_path, @ptrCast(allocator), @ptrCast(&self)));
+      try Error.check(Api.ort.CreateLoraAdapter.?(adapter_path, apiCast(allocator), apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
@@ -5195,50 +5257,51 @@ pub const RunOptions = opaque {
     /// bytes: In-memory buffer of the LoRA adapter.
     pub fn initFromArray(bytes: []const u8, allocator: *Allocator) !*@This() {
       var self: ?*@This() = null;
-      try Error.check(Api.ort.CreateLoraAdapterFromArray.?(bytes.ptr, bytes.len, @ptrCast(allocator), @ptrCast(&self)));
+      try Error.check(Api.ort.CreateLoraAdapterFromArray.?(bytes.ptr, bytes.len, apiCast(allocator), apiCast(&self)));
       return self orelse error.OutOfMemory;
     }
 
     /// Release the LoraAdapter.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseLoraAdapter.?(@ptrCast(self));
+      Api.ort.ReleaseLoraAdapter.?(apiCast(self));
     }
   };
 
   pub fn addActiveLoraAdapter(self: *@This(), adapter: *const LoraAdapter) !void {
-    try Error.check(Api.ort.RunOptionsAddActiveLoraAdapter.?(@ptrCast(self), @ptrCast(adapter)));
+    try Error.check(Api.ort.RunOptionsAddActiveLoraAdapter.?(apiCast(self), apiCast(adapter)));
   }
 
   pub fn addConfigEntry(self: *@This(), key: [*:0]const u8, value: [*:0]const u8) !void {
-    try Error.check(Api.ort.AddRunConfigEntry.?(@ptrCast(self), key, value));
+    try Error.check(Api.ort.AddRunConfigEntry.?(apiCast(self), key, value));
   }
 
   pub fn getConfigEntry(self: *const @This(), key: [*:0]const u8) ?[*:0]const u8 {
-    return Api.ort.GetRunConfigEntry.?(@ptrCast(self), key);
+    return Api.ort.GetRunConfigEntry.?(apiCast(self), key);
   }
 
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseRunOptions.?(@ptrCast(self));
+    Api.ort.ReleaseRunOptions.?(apiCast(self));
   }
 };
 
 pub const IoBinding = opaque {
+  pub const Underlying = Api.c.OrtIoBinding;
   pub fn init(session: *Session) !*@This() {
     var out: ?*@This() = null;
-    try Error.check(Api.ort.CreateIoBinding.?(@ptrCast(session), @ptrCast(&out)));
+    try Error.check(Api.ort.CreateIoBinding.?(apiCast(session), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn bindInput(self: *@This(), name: [*:0]const u8, value: *const Value) !void {
-    try Error.check(Api.ort.BindInput.?(@ptrCast(self), name, @ptrCast(value)));
+    try Error.check(Api.ort.BindInput.?(apiCast(self), name, apiCast(value)));
   }
 
   pub fn bindOutput(self: *@This(), name: [*:0]const u8, value: *const Value) !void {
-    try Error.check(Api.ort.BindOutput.?(@ptrCast(self), name, @ptrCast(value)));
+    try Error.check(Api.ort.BindOutput.?(apiCast(self), name, apiCast(value)));
   }
 
   pub fn bindOutputToDevice(self: *@This(), name: [*:0]const u8, mem_info: *const Allocator.MemoryInfo) !void {
-    try Error.check(Api.ort.BindOutputToDevice.?(@ptrCast(self), name, @ptrCast(mem_info)));
+    try Error.check(Api.ort.BindOutputToDevice.?(apiCast(self), name, apiCast(mem_info)));
   }
 
   pub fn getBoundOutputNames(self: *const @This(), allocator: *Allocator) !struct {
@@ -5253,7 +5316,7 @@ pub const IoBinding = opaque {
     var buffer: ?[*]u8 = null;
     var lengths_ptr: ?[*]usize = null;
     var count: usize = 0;
-    try Error.check(Api.ort.GetBoundOutputNames.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&buffer), @ptrCast(&lengths_ptr), &count));
+    try Error.check(Api.ort.GetBoundOutputNames.?(apiCast(self), apiCast(allocator), apiCast(&buffer), apiCast(&lengths_ptr), &count));
     if (buffer == null or lengths_ptr == null or count == 0) return error.Unbounded;
     return .{ .names = buffer.?, .lengths = lengths_ptr.?[0 .. count] };
   }
@@ -5262,84 +5325,85 @@ pub const IoBinding = opaque {
   pub fn getBoundOutputValues(self: *const @This(), allocator: *Allocator) ![]*Value {
     var output_ptr: ?[*]*Value = null;
     var count: usize = 0;
-    try Error.check(Api.ort.GetBoundOutputValues.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&output_ptr), &count));
+    try Error.check(Api.ort.GetBoundOutputValues.?(apiCast(self), apiCast(allocator), apiCast(&output_ptr), &count));
     return (output_ptr orelse return &.{})[0..count];
   }
 
   pub fn clearBoundInputs(self: *@This()) void {
-    Api.ort.ClearBoundInputs.?(@ptrCast(self));
+    Api.ort.ClearBoundInputs.?(apiCast(self));
   }
 
   pub fn clearBoundOutputs(self: *@This()) void {
-    Api.ort.ClearBoundOutputs.?(@ptrCast(self));
+    Api.ort.ClearBoundOutputs.?(apiCast(self));
   }
 
   pub fn synchronizeInputs(self: *@This()) !void {
-    try Error.check(Api.ort.SynchronizeBoundInputs.?(@ptrCast(self)));
+    try Error.check(Api.ort.SynchronizeBoundInputs.?(apiCast(self)));
   }
 
   pub fn synchronizeOutputs(self: *@This()) !void {
-    try Error.check(Api.ort.SynchronizeBoundOutputs.?(@ptrCast(self)));
+    try Error.check(Api.ort.SynchronizeBoundOutputs.?(apiCast(self)));
   }
 
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseIoBinding.?(@ptrCast(self));
+    Api.ort.ReleaseIoBinding.?(apiCast(self));
   }
 };
 
 pub const KernelContext = opaque {
+  pub const Underlying = Api.c.OrtKernelContext;
   pub fn getInputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.KernelContext_GetInputCount.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.KernelContext_GetInputCount.?(apiCast(self), &out));
     return out;
   }
 
   pub fn getOutputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.KernelContext_GetOutputCount.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.KernelContext_GetOutputCount.?(apiCast(self), &out));
     return out;
   }
 
   pub fn getInput(self: *const @This(), index: usize) !?*const Value {
     var out: ?*const Value = null;
-    try Error.check(Api.ort.KernelContext_GetInput.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.KernelContext_GetInput.?(apiCast(self), index, apiCast(&out)));
     return out;
   }
 
   pub fn getOutput(self: *@This(), index: usize, dims: []const i64) !*Value {
     var out: ?*Value = null;
-    try Error.check(Api.ort.KernelContext_GetOutput.?(@ptrCast(self), index, dims.ptr, dims.len, @ptrCast(&out)));
+    try Error.check(Api.ort.KernelContext_GetOutput.?(apiCast(self), index, dims.ptr, dims.len, apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn getGpuComputeStream(self: *const @This()) !?*anyopaque {
     var out: ?*anyopaque = null;
-    try Error.check(Api.ort.KernelContext_GetGPUComputeStream.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.KernelContext_GetGPUComputeStream.?(apiCast(self), &out));
     return out;
   }
   
   pub fn getResource(self: *const @This(), version: c_int, id: c_int) !?*anyopaque {
     var out: ?*anyopaque = null;
-    try Error.check(Api.ort.KernelContext_GetResource.?(@ptrCast(self), version, id, &out));
+    try Error.check(Api.ort.KernelContext_GetResource.?(apiCast(self), version, id, &out));
     return out;
   }
   
   pub fn getScratchBuffer(self: *const @This(), mem_info: *const Allocator.MemoryInfo, size: usize) !?*anyopaque {
     var out: ?*anyopaque = null;
-    try Error.check(Api.ort.KernelContext_GetScratchBuffer.?(@ptrCast(self), @ptrCast(mem_info), size, &out));
+    try Error.check(Api.ort.KernelContext_GetScratchBuffer.?(apiCast(self), apiCast(mem_info), size, &out));
     return out;
   }
   
   pub fn getAllocator(self: *const @This(), mem_info: *const Allocator.MemoryInfo) !*Allocator {
     var out: ?*Allocator = null;
-    try Error.check(Api.ort.KernelContext_GetAllocator.?(@ptrCast(self), @ptrCast(mem_info), @ptrCast(&out)));
+    try Error.check(Api.ort.KernelContext_GetAllocator.?(apiCast(self), apiCast(mem_info), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Get the runtime logger.
   pub fn getLogger(self: *const @This()) !*const KernelInfo.Logger {
     var out: ?*const KernelInfo.Logger = null;
-    try Error.check(Api.ort.KernelContext_GetLogger.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.KernelContext_GetLogger.?(apiCast(self), apiCast(&out)));
     return out.?;
   }
 
@@ -5351,86 +5415,87 @@ pub const KernelContext = opaque {
     num_batch: usize, 
     user_data: ?*anyopaque
   ) !void {
-    try Error.check(Api.ort.KernelContext_ParallelFor.?(@ptrCast(self), task, total, num_batch, user_data));
+    try Error.check(Api.ort.KernelContext_ParallelFor.?(apiCast(self), task, total, num_batch, user_data));
   }
 };
 
 pub const KernelInfo = opaque {
+  pub const Underlying = Api.c.OrtKernelInfo;
   pub fn copy(self: *const @This()) !*@This() {
     var out: ?*@This() = null;
-    try Error.check(Api.ort.CopyKernelInfo.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.CopyKernelInfo.?(apiCast(self), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn _getNodeName(self: *const @This(), out_ptr: [*:0]u8, out_size: *usize) !void {
-    try Error.check(Api.ort.KernelInfo_GetNodeName.?(@ptrCast(self), @ptrCast(out_ptr), out_size));
+    try Error.check(Api.ort.KernelInfo_GetNodeName.?(apiCast(self), apiCast(out_ptr), out_size));
   }
 
   pub fn getNodeName(self: *const @This(), gpa: std.mem.Allocator) ![:0]u8 {
     var size: usize = 0;
     // First call to get size (pass null)
-    self._getNodeName(@ptrCast(@constCast(&[_]u8{})), &size) catch {};
+    self._getNodeName(apiCast(@constCast(&[_]u8{})), &size) catch {};
     std.debug.assert(size != 0);
 
     const buf = try gpa.alloc(u8, size);
     errdefer gpa.free(buf);
 
-    try self._getNodeName(@ptrCast(buf.ptr), &size);
+    try self._getNodeName(apiCast(buf.ptr), &size);
     std.debug.assert(buf.len == size);
-    return @as([*:0]u8, @ptrCast(buf.ptr))[0 .. size - 1: 0];
+    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
   }
   
   pub fn getAttributeFloat(self: *const @This(), name: [*:0]const u8) !f32 {
     var out: f32 = 0;
-    try Error.check(Api.ort.KernelInfoGetAttribute_float.?(@ptrCast(self), name, &out));
+    try Error.check(Api.ort.KernelInfoGetAttribute_float.?(apiCast(self), name, &out));
     return out;
   }
   
   pub fn getAttributeInt(self: *const @This(), name: [*:0]const u8) !i64 {
     var out: i64 = 0;
-    try Error.check(Api.ort.KernelInfoGetAttribute_int64.?(@ptrCast(self), name, &out));
+    try Error.check(Api.ort.KernelInfoGetAttribute_int64.?(apiCast(self), name, &out));
     return out;
   }
   
   pub fn _getAttributeString(self: *const @This(), name: [*:0]const u8, out_ptr: [*:0]u8, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttribute_string.?(@ptrCast(self), name, @ptrCast(out_ptr), out_len));
+    try Error.check(Api.ort.KernelInfoGetAttribute_string.?(apiCast(self), name, apiCast(out_ptr), out_len));
   }
 
   pub fn getAttributeString(self: *const @This(), name: [*:0]const u8, gpa: std.mem.Allocator) ![:0]u8 {
     var size: usize = 0;
     // First call get size
-    self._getAttributeString(name, @ptrCast(@constCast(&[_]u8{})), &size) catch {};
+    self._getAttributeString(name, apiCast(@constCast(&[_]u8{})), &size) catch {};
 
     const buf = try gpa.alloc(u8, size);
     errdefer gpa.free(buf);
 
-    try self._getAttributeString(name, @ptrCast(buf.ptr), &size);
+    try self._getAttributeString(name, apiCast(buf.ptr), &size);
     std.debug.assert(buf.len == size);
-    return @as([*:0]u8, @ptrCast(buf.ptr))[0 .. size - 1: 0];
+    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
   }
   
   pub fn getAttributeTensor(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
     var out: ?*Value = null;
-    try Error.check(Api.ort.KernelInfoGetAttribute_tensor.?(@ptrCast(self), name, @ptrCast(allocator), @ptrCast(&out)));
+    try Error.check(Api.ort.KernelInfoGetAttribute_tensor.?(apiCast(self), name, apiCast(allocator), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   /// Get the number of inputs.
   pub fn getInputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.KernelInfo_GetInputCount.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.KernelInfo_GetInputCount.?(apiCast(self), &out));
     return out;
   }
 
   /// Get the number of outputs.
   pub fn getOutputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.KernelInfo_GetOutputCount.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.KernelInfo_GetOutputCount.?(apiCast(self), &out));
     return out;
   }
 
   pub fn _getInputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfo_GetInputName.?(@ptrCast(self), index, @ptrCast(out_ptr), out_len));
+    try Error.check(Api.ort.KernelInfo_GetInputName.?(apiCast(self), index, apiCast(out_ptr), out_len));
   }
 
   /// Get the name of an input.
@@ -5439,19 +5504,19 @@ pub const KernelInfo = opaque {
   pub fn getInputName(self: *const @This(), index: usize, gpa: std.mem.Allocator) ![:0]u8 {
     var size: usize = 0;
     // First call to get the required size
-    self._getInputName(index, @ptrCast(@constCast(&[_]u8{})), &size) catch {};
+    self._getInputName(index, apiCast(@constCast(&[_]u8{})), &size) catch {};
 
     const buf = try gpa.alloc(u8, size);
     errdefer gpa.free(buf);
 
     // Second call to fill the buffer
-    try self._getInputName(index, @ptrCast(buf.ptr), &size);
+    try self._getInputName(index, apiCast(buf.ptr), &size);
     std.debug.assert(buf.len == size);
-    return @as([*:0]u8, @ptrCast(buf.ptr))[0 .. size - 1: 0];
+    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
   }
 
   pub fn _getOutputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfo_GetOutputName.?(@ptrCast(self), index, @ptrCast(out_ptr), out_len));
+    try Error.check(Api.ort.KernelInfo_GetOutputName.?(apiCast(self), index, apiCast(out_ptr), out_len));
   }
   /// Get the name of an output.
   /// allocator: The allocator used to allocate the returned string buffer.
@@ -5459,21 +5524,21 @@ pub const KernelInfo = opaque {
   pub fn getOutputName(self: *const @This(), index: usize, gpa: std.mem.Allocator) ![:0]u8 {
     var size: usize = 0;
     // First call to get the required size
-    self._getOutputName(index, @ptrCast(@constCast(&[_]u8{})), &size) catch {};
+    self._getOutputName(index, apiCast(@constCast(&[_]u8{})), &size) catch {};
     const buf = try gpa.alloc(u8, size);
     errdefer gpa.free(buf);
 
     // Second call to fill the buffer
-    try self._getOutputName(index, @ptrCast(buf.ptr), &size);
+    try self._getOutputName(index, apiCast(buf.ptr), &size);
     std.debug.assert(buf.len == size);
-    return @as([*:0]u8, @ptrCast(buf.ptr))[0 .. size - 1: 0];
+    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
   }
 
   /// Get the type information for an input.
   /// The returned TypeInfo must be deinitialized by the caller.
   pub fn getInputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
     var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.KernelInfo_GetInputTypeInfo.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.KernelInfo_GetInputTypeInfo.?(apiCast(self), index, apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
@@ -5481,12 +5546,12 @@ pub const KernelInfo = opaque {
   /// The returned TypeInfo must be deinitialized by the caller.
   pub fn getOutputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
     var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.KernelInfo_GetOutputTypeInfo.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.KernelInfo_GetOutputTypeInfo.?(apiCast(self), index, apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub fn _getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out_ptr: [*]f32, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttributeArray_float.?(@ptrCast(self), name, @ptrCast(out_ptr), out_len));
+    try Error.check(Api.ort.KernelInfoGetAttributeArray_float.?(apiCast(self), name, apiCast(out_ptr), out_len));
   }
 
   /// Fetch a float array stored as an attribute.
@@ -5504,7 +5569,7 @@ pub const KernelInfo = opaque {
   }
 
   pub fn _getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out_ptr: [*]i64, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttributeArray_int64.?(@ptrCast(self), name, @ptrCast(out_ptr), out_len));
+    try Error.check(Api.ort.KernelInfoGetAttributeArray_int64.?(apiCast(self), name, apiCast(out_ptr), out_len));
   }
 
   /// Fetch an int64 array stored as an attribute.
@@ -5525,11 +5590,12 @@ pub const KernelInfo = opaque {
   /// Please use `Allocator.deinit` (C API ReleaseAllocator) to release the returned object.
   pub fn getAllocator(self: *const @This(), mem_type: Allocator.MemoryType) !*Allocator {
     var out: ?*Allocator = null;
-    try Error.check(Api.ort.KernelInfoGetAllocator.?(@ptrCast(self), @intFromEnum(mem_type), @ptrCast(&out)));
+    try Error.check(Api.ort.KernelInfoGetAllocator.?(apiCast(self), @intFromEnum(mem_type), apiCast(&out)));
     return out orelse error.OutOfMemory;
   }
 
   pub const Logger = opaque {
+    pub const Underlying = Api.c.OrtLogger;
     /// Log a message.
     pub fn logMessage(
       self: *const @This(), 
@@ -5540,7 +5606,7 @@ pub const KernelInfo = opaque {
       func: [*:0]const u8
     ) !void {
       try Error.check(Api.ort.Logger_LogMessage.?(
-          @ptrCast(self), 
+          apiCast(self), 
           @intFromEnum(severity), 
           message, 
           file, 
@@ -5552,14 +5618,14 @@ pub const KernelInfo = opaque {
     /// Get the logging severity level.
     pub fn getSeverityLevel(self: *const @This()) !Logging.Level {
       var out: Api.c.OrtLoggingLevel = undefined;
-      try Error.check(Api.ort.Logger_GetLoggingSeverityLevel.?(@ptrCast(self), &out));
+      try Error.check(Api.ort.Logger_GetLoggingSeverityLevel.?(apiCast(self), &out));
       return @enumFromInt(out);
     }
   };
 
   pub fn getLogger(self: *const @This()) !*const Logger {
     var out: ?*const Logger = null;
-    try Error.check(Api.ort.KernelInfo_GetLogger.?(@ptrCast(self), @ptrCast(&out)));
+    try Error.check(Api.ort.KernelInfo_GetLogger.?(apiCast(self), apiCast(&out)));
     return out.?;
   }
 
@@ -5568,21 +5634,22 @@ pub const KernelInfo = opaque {
   pub fn getConstantInputTensor(self: *const @This(), index: usize, is_constant: *bool) !?*const Value {
     var out: ?*const Value = null;
     var is_const_c: c_int = 0;
-    try Error.check(Api.ort.KernelInfoGetConstantInput_tensor.?(@ptrCast(self), index, &is_const_c, @ptrCast(&out)));
+    try Error.check(Api.ort.KernelInfoGetConstantInput_tensor.?(apiCast(self), index, &is_const_c, apiCast(&out)));
     is_constant.* = (is_const_c != 0);
     return out;
   }
 
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseKernelInfo.?(@ptrCast(self));
+    Api.ort.ReleaseKernelInfo.?(apiCast(self));
   }
 };
 
 /// Represents a physical hardware device (CPU, GPU, NPU) available on the system.
 /// This is an opaque type managed by ORT.
 pub const HardwareDevice = opaque {
+  pub const Underlying = Api.c.OrtHardwareDevice;
   /// Maps to OrtHardwareDeviceType in the C API.
-  pub const Type = enum(c_uint) {
+  pub const Type = enum(Api.c.OrtHardwareDeviceType) {
     CPU = @bitCast(Api.c.OrtHardwareDeviceType_CPU),
     GPU = @bitCast(Api.c.OrtHardwareDeviceType_GPU),
     NPU = @bitCast(Api.c.OrtHardwareDeviceType_NPU),
@@ -5591,26 +5658,26 @@ pub const HardwareDevice = opaque {
   /// Returns the type of hardware (CPU, GPU, or NPU).
   /// Wraps OrtApi::HardwareDevice_Type
   pub fn getType(self: *const @This()) Type {
-    return @enumFromInt(Api.ort.HardwareDevice_Type.?(@ptrCast(self)));
+    return @enumFromInt(Api.ort.HardwareDevice_Type.?(apiCast(self)));
   }
 
   /// Returns the hardware device's vendor name as a null-terminated string. DO NOT FREE
   /// Wraps OrtApi::HardwareDevice_Vendor
   pub fn getVendor(self: *const @This()) [*:0]const u8 {
-    return @ptrCast(Api.ort.HardwareDevice_Vendor.?(@ptrCast(self)));
+    return apiCast(Api.ort.HardwareDevice_Vendor.?(apiCast(self)));
   }
 
   /// Returns the hardware device's vendor identifier (e.g., PCI Vendor ID).
   /// Wraps OrtApi::HardwareDevice_VendorId
   pub fn getVendorId(self: *const @This()) u32 {
-    return Api.ort.HardwareDevice_VendorId.?(@ptrCast(self));
+    return Api.ort.HardwareDevice_VendorId.?(apiCast(self));
   }
 
   /// Returns the hardware device's unique identifier.
   /// Note: This identifies the specific hardware instance when combined with vendor id.
   /// Wraps OrtApi::HardwareDevice_DeviceId
   pub fn getDeviceId(self: *const @This()) u32 {
-    return Api.ort.HardwareDevice_DeviceId.?(@ptrCast(self));
+    return Api.ort.HardwareDevice_DeviceId.?(apiCast(self));
   }
 
   /// Returns an OrtKeyValuePairs instance containing additional metadata for the device.
@@ -5618,11 +5685,12 @@ pub const HardwareDevice = opaque {
   /// Wraps OrtApi::HardwareDevice_Metadata
   pub fn getMetadata(self: *const @This()) *const KeyValuePairs {
     // returns null iff the input device is null
-    return @ptrCast(Api.ort.HardwareDevice_Metadata.?(@ptrCast(self)).?);
+    return apiCast(Api.ort.HardwareDevice_Metadata.?(apiCast(self)).?);
   }
 };
 
 pub const Op = opaque {
+  pub const Underlying = Api.c.OrtOp;
   /// Create onnxruntime native operator.
   pub fn init(
     info: *const KernelInfo,
@@ -5638,18 +5706,18 @@ pub const Op = opaque {
     std.debug.assert(type_constraint_names.len == type_constraint_values.len);
     var out: ?*@This() = null;
     try Error.check(Api.ort.CreateOp.?(
-      @ptrCast(info),
+      apiCast(info),
       op_name,
       domain,
       version,
-      @ptrCast(type_constraint_names.ptr),
-      @ptrCast(type_constraint_values.ptr),
+      apiCast(type_constraint_names.ptr),
+      apiCast(type_constraint_values.ptr),
       @intCast(type_constraint_names.len),
-      @ptrCast(attrs.ptr),
+      apiCast(attrs.ptr),
       @intCast(attrs.len),
       input_count,
       output_count,
-      @ptrCast(&out)
+      apiCast(&out)
     ));
     return out orelse error.OutOfMemory;
   }
@@ -5661,24 +5729,25 @@ pub const Op = opaque {
     outputs: []*Value
   ) !void {
     try Error.check(Api.ort.InvokeOp.?(
-      @ptrCast(context),
-      @ptrCast(self),
-      @ptrCast(inputs.ptr),
+      apiCast(context),
+      apiCast(self),
+      apiCast(inputs.ptr),
       @intCast(inputs.len),
-      @ptrCast(outputs.ptr),
+      apiCast(outputs.ptr),
       @intCast(outputs.len)
     ));
   }
 
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseOp.?(@ptrCast(self));
+    Api.ort.ReleaseOp.?(apiCast(self));
   }
 
   pub const Custom = struct {
-    underlying: Api.c.OrtCustomOp,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@FieldType(@This(), "underlying"))); }
+    pub const Underlying = Api.c.OrtCustomOp;
+    underlying: @This().Underlying,
+    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@This().Underlying)); }
 
-    pub const InputOutputCharacteristic = enum(c_uint) {
+    pub const InputOutputCharacteristic = enum(Api.c.OrtCustomOpInputOutputCharacteristic) {
       Required = @bitCast(Api.c.INPUT_OUTPUT_REQUIRED),
       Optional = @bitCast(Api.c.INPUT_OUTPUT_OPTIONAL),
       Variadic = @bitCast(Api.c.INPUT_OUTPUT_VARIADIC),
@@ -5724,11 +5793,11 @@ pub const Op = opaque {
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
         fn getSelf(ptr: ?*const Api.c.OrtCustomOp) *const T {
-          return @fieldParentPtr("ort_op", @as(*const Custom, @ptrCast(ptr.?)));
+          return @fieldParentPtr("ort_op", @as(*const Custom, apiCast(ptr.?)));
         }
 
         fn createKernelV1(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo) callconv(.c) ?*anyopaque {
-          return getSelf(op).createKernelV1(api.?, @ptrCast(info.?)) catch null;
+          return getSelf(op).createKernelV1(api.?, apiCast(info.?)) catch null;
         }
 
         fn getName(op: ?*const Api.c.OrtCustomOp) callconv(.c) [*:0]const u8 {
@@ -5784,15 +5853,15 @@ pub const Op = opaque {
         }
 
         fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel_out: ?*?*anyopaque) callconv(.c) ?*Api.c.OrtStatus {
-          const res = getSelf(op).createKernelV2(api.?, @ptrCast(info.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          const res = getSelf(op).createKernelV2(api.?, apiCast(info.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           kernel_out.?.* = res;
           return null;
         }
 
         fn inferShape(op: ?*const Api.c.OrtCustomOp, ctx: ?*Api.c.OrtShapeInferContext) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(op).inferOutputShape(@ptrCast(ctx.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          getSelf(op).inferOutputShape(apiCast(ctx.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
@@ -5807,7 +5876,7 @@ pub const Op = opaque {
         // Static Methods below this comment (C does NOT pass 'op' pointer)
 
         fn kernelComputeV1(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) void {
-          T.computeV1(kernel_state, @ptrCast(context.?));
+          T.computeV1(kernel_state, apiCast(context.?));
         }
 
         fn kernelDestroy(kernel_state: ?*anyopaque) callconv(.c) void {
@@ -5815,25 +5884,25 @@ pub const Op = opaque {
         }
 
         fn kernelComputeV2(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Api.c.OrtStatus {
-          T.computeV2(kernel_state, @ptrCast(context.?)) catch |err|
-            return @ptrCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+          T.computeV2(kernel_state, apiCast(context.?)) catch |err|
+            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
           return null;
         }
 
         fn getInplace(in_idx: ?*?*c_int, out_idx: ?*?*c_int) callconv(.c) usize {
-          return T.getMayInplace(@ptrCast(in_idx.?), @ptrCast(out_idx.?));
+          return T.getMayInplace(apiCast(in_idx.?), apiCast(out_idx.?));
         }
 
         fn releaseInplace(in_idx: ?*c_int, out_idx: ?*c_int) callconv(.c) void {
-          T.releaseMayInplace(@ptrCast(in_idx), @ptrCast(out_idx));
+          T.releaseMayInplace(apiCast(in_idx), apiCast(out_idx));
         }
 
         fn getAlias(in_idx: ?*?*c_int, out_idx: ?*?*c_int) callconv(.c) usize {
-          return T.getAliasMap(@ptrCast(in_idx.?), @ptrCast(out_idx.?));
+          return T.getAliasMap(apiCast(in_idx.?), apiCast(out_idx.?));
         }
 
         fn releaseAlias(in_idx: ?*c_int, out_idx: ?*c_int) callconv(.c) void {
-          T.releaseAliasMap(@ptrCast(in_idx), @ptrCast(out_idx));
+          T.releaseAliasMap(apiCast(in_idx), apiCast(out_idx));
         }
       };
 
@@ -5870,10 +5939,11 @@ pub const Op = opaque {
     }
 
     pub const Domain = opaque {
+      pub const Underlying = Api.c.OrtCustomOpDomain;
       /// Create a custom op domain.
       pub fn init(domain: [*:0]const u8) !*@This() {
         var out: ?*@This() = null;
-        try Error.check(Api.ort.CreateCustomOpDomain.?(domain, @ptrCast(&out)));
+        try Error.check(Api.ort.CreateCustomOpDomain.?(domain, apiCast(&out)));
         return out orelse error.OutOfMemory;
       }
 
@@ -5881,14 +5951,14 @@ pub const Op = opaque {
       /// The Op.Custom struct must remain valid until the domain is released.
       pub fn add(self: *@This(), op: *Custom) !void {
         try Error.check(Api.ort.CustomOpDomain_Add.?(
-          @ptrCast(self),
-          @ptrCast(&op.underlying),
+          apiCast(self),
+          apiCast(&op.underlying),
         ));
       }
 
       /// Release the domain.
       pub fn deinit(self: *@This()) void {
-        Api.ort.ReleaseCustomOpDomain.?(@ptrCast(self));
+        Api.ort.ReleaseCustomOpDomain.?(apiCast(self));
       }
     };
   };
@@ -5897,6 +5967,7 @@ pub const Op = opaque {
 /// Information about an initializer stored in an external file (e.g., filepath, offset, size).
 /// Wraps OrtExternalInitializerInfo.
 pub const ExternalInitializerInfo = opaque {
+  pub const Underlying = Api.c.OrtExternalInitializerInfo;
   /// Creates an OrtExternalInitializerInfo instance.
   /// Wraps OrtApi::CreateExternalInitializerInfo
   pub fn init(filepath: Utils.Path, file_offset: i64, byte_size: usize) !*@This() {
@@ -5905,7 +5976,7 @@ pub const ExternalInitializerInfo = opaque {
       filepath,
       file_offset,
       byte_size,
-      @ptrCast(&out),
+      apiCast(&out),
     ));
     return out orelse error.OutOfMemory;
   }
@@ -5915,42 +5986,43 @@ pub const ExternalInitializerInfo = opaque {
   /// Note: Do NOT free this pointer. It is valid for the lifetime of this object.
   /// Wraps OrtApi::ExternalInitializerInfo_GetFilePath
   pub fn getFilePath(self: *const @This()) Utils.Path {
-    return @ptrCast(Api.ort.ExternalInitializerInfo_GetFilePath.?(@ptrCast(self)));
+    return apiCast(Api.ort.ExternalInitializerInfo_GetFilePath.?(apiCast(self)));
   }
 
   /// Get the byte offset within the file where the initializer's data is stored.
   /// Wraps OrtApi::ExternalInitializerInfo_GetFileOffset
   pub fn getFileOffset(self: *const @This()) i64 {
-    return Api.ort.ExternalInitializerInfo_GetFileOffset.?(@ptrCast(self));
+    return Api.ort.ExternalInitializerInfo_GetFileOffset.?(apiCast(self));
   }
 
   /// Get the size in bytes of the initializer's data within the file.
   /// Wraps OrtApi::ExternalInitializerInfo_GetByteSize
   pub fn getByteSize(self: *const @This()) usize {
-    return Api.ort.ExternalInitializerInfo_GetByteSize.?(@ptrCast(self));
+    return Api.ort.ExternalInitializerInfo_GetByteSize.?(apiCast(self));
   }
 
   /// Release an OrtExternalInitializerInfo instance.
   /// Wraps OrtApi::ReleaseExternalInitializerInfo
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseExternalInitializerInfo.?(@ptrCast(self));
+    Api.ort.ReleaseExternalInitializerInfo.?(apiCast(self));
   }
 };
 
 /// Wrapper around ::OrtPrepackedWeightsContainer
 /// Create only and pass to Session constructor for multiple sessions to share pre-packed weights.
 pub const PrepackedWeightsContainer = opaque {
+  pub const Underlying = Api.c.OrtPrepackedWeightsContainer;
   /// Wraps OrtApi::CreatePrepackedWeightsContainer
   pub fn init() !*@This() {
     var self: ?*@This() = null;
-    try Error.check(Api.ort.CreatePrepackedWeightsContainer.?(@ptrCast(&self)));
+    try Error.check(Api.ort.CreatePrepackedWeightsContainer.?(apiCast(&self)));
     return self orelse error.OutOfMemory;
   }
 
   /// Release the container.
   /// Note: Instance must not be released until the sessions using it are released.
   pub fn deinit(self: *@This()) void {
-    Api.ort.ReleasePrepackedWeightsContainer.?(@ptrCast(self));
+    Api.ort.ReleasePrepackedWeightsContainer.?(apiCast(self));
   }
 };
 
@@ -5958,10 +6030,11 @@ pub const PrepackedWeightsContainer = opaque {
 ///
 /// This context is passed to the custom operator's shape inference function to allow it to compute and set the output shapes based on input shapes and node attributes.
 pub const ShapeInferContext = opaque {
+  pub const Underlying = Api.c.OrtShapeInferContext;
   /// Returns the number of inputs provided to this operator node.
   pub fn getInputCount(self: *const @This()) !usize {
     var out: usize = 0;
-    try Error.check(Api.ort.ShapeInferContext_GetInputCount.?(@ptrCast(self), &out));
+    try Error.check(Api.ort.ShapeInferContext_GetInputCount.?(apiCast(self), &out));
     return out;
   }
 
@@ -5976,7 +6049,7 @@ pub const ShapeInferContext = opaque {
   /// You must NOT free the returned pointer.
   pub fn getInputTypeShape(self: *const @This(), index: usize) !*TensorTypeAndShapeInfo.C {
     var out: ?*TensorTypeAndShapeInfo.C = null;
-    try Error.check(Api.ort.ShapeInferContext_GetInputTypeShape.?(@ptrCast(self), index, @ptrCast(&out)));
+    try Error.check(Api.ort.ShapeInferContext_GetInputTypeShape.?(apiCast(self), index, apiCast(&out)));
     // Api returns an error "Failed to fetch type shape info for the index." if the info is null => null == oom
     //
     // https://github.com/microsoft/onnxruntime/blob/669128acd5eb804daa5d756e1dcf349abbdfcdac/onnxruntime/core/session/custom_ops.cc#L335
@@ -6000,7 +6073,7 @@ pub const ShapeInferContext = opaque {
   /// - An error if the ORT call fails.
   pub fn getAttribute(self: *const @This(), name: [*:0]const u8) !?*const OpAttr {
     var out: ?*const OpAttr = null;
-    try Error.check(Api.ort.ShapeInferContext_GetAttribute.?(@ptrCast(self), name, @ptrCast(&out)));
+    try Error.check(Api.ort.ShapeInferContext_GetAttribute.?(apiCast(self), name, apiCast(&out)));
     return out;
   }
 
@@ -6011,7 +6084,7 @@ pub const ShapeInferContext = opaque {
   /// index: The zero-based index of the output to set.
   /// info: The computed type and shape information.
   pub fn setOutputTypeShape(self: *const @This(), index: usize, info: *const TensorTypeAndShapeInfo.C) !void {
-    try Error.check(Api.ort.ShapeInferContext_SetOutputTypeShape.?(@ptrCast(self), index, @ptrCast(info)));
+    try Error.check(Api.ort.ShapeInferContext_SetOutputTypeShape.?(apiCast(self), index, apiCast(info)));
   }
 };
 
@@ -6032,10 +6105,11 @@ pub const ProviderOptions = struct {
 
   /// TensorRT Provider Options (V2)
   pub const TensorRT = opaque {
+    pub const Underlying = Api.c.OrtTensorRTProviderOptions;
     /// Wraps OrtApi::CreateTensorRTProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
-      try Error.check(Api.ort.CreateTensorRTProviderOptions.?(@ptrCast(&out)));
+      try Error.check(Api.ort.CreateTensorRTProviderOptions.?(apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
@@ -6043,20 +6117,20 @@ pub const ProviderOptions = struct {
     /// options: Array of keys and values.
     pub fn update(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
       if (keys.len != values.len) return error.InvalidArgs;
-      try Error.check(Api.ort.UpdateTensorRTProviderOptions.?(@ptrCast(self), @ptrCast(keys.ptr), @ptrCast(values.ptr), keys.len));
+      try Error.check(Api.ort.UpdateTensorRTProviderOptions.?(apiCast(self), apiCast(keys.ptr), apiCast(values.ptr), keys.len));
     }
 
     /// Wraps OrtApi::UpdateTensorRTProviderOptionsWithValue
     /// Update an option where its data type is a pointer (e.g., user_compute_stream).
     pub fn updateWithValue(self: *@This(), key: [*:0]const u8, value: *anyopaque) !void {
-      try Error.check(Api.ort.UpdateTensorRTProviderOptionsWithValue.?(@ptrCast(self), key, value));
+      try Error.check(Api.ort.UpdateTensorRTProviderOptionsWithValue.?(apiCast(self), key, value));
     }
 
     /// Wraps OrtApi::GetTensorRTProviderOptionsByName
     /// Get a provider option where its data type is pointer.
     pub fn getByName(self: *const @This(), key: [*:0]const u8) !?*anyopaque {
       var out: ?*anyopaque = null;
-      try Error.check(Api.ort.GetTensorRTProviderOptionsByName.?(@ptrCast(self), key, &out));
+      try Error.check(Api.ort.GetTensorRTProviderOptionsByName.?(apiCast(self), key, &out));
       return out;
     }
 
@@ -6064,141 +6138,145 @@ pub const ProviderOptions = struct {
     /// The returned string must be freed using the allocator.
     pub fn getOptionsAsString(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(Api.ort.GetTensorRTProviderOptionsAsString.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(Api.ort.GetTensorRTProviderOptionsAsString.?(apiCast(self), apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Release the options.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseTensorRTProviderOptions.?(@ptrCast(self));
+      Api.ort.ReleaseTensorRTProviderOptions.?(apiCast(self));
     }
   };
 
   /// ROCM Provider Options
   /// Wraps ::OrtROCMProviderOptions
   pub const ROCM = struct {
+    pub const Underlying = Api.c.OrtROCMProviderOptions;
     underlying: Api.c.OrtROCMProviderOptions,
 
     /// Wraps OrtApi::CreateROCMProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
-      try Error.check(Api.ort.CreateROCMProviderOptions.?(@ptrCast(&out)));
+      try Error.check(Api.ort.CreateROCMProviderOptions.?(apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Wraps OrtApi::UpdateROCMProviderOptions
     pub fn update(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
       if (keys.len != values.len) return error.InvalidArgs;
-      try Error.check(Api.ort.UpdateROCMProviderOptions.?(@ptrCast(self), @ptrCast(keys.ptr), @ptrCast(values.ptr), keys.len));
+      try Error.check(Api.ort.UpdateROCMProviderOptions.?(apiCast(self), apiCast(keys.ptr), apiCast(values.ptr), keys.len));
     }
 
     /// Wraps OrtApi::GetROCMProviderOptionsAsString
     pub fn getOptionsAsString(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(Api.ort.GetROCMProviderOptionsAsString.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(Api.ort.GetROCMProviderOptionsAsString.?(apiCast(self), apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Release the options.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseROCMProviderOptions.?(@ptrCast(self));
+      Api.ort.ReleaseROCMProviderOptions.?(apiCast(self));
     }
   };
 
   /// CUDA Provider Options (V2)
   pub const CUDA = opaque {
+    pub const Underlying = Api.c.OrtCUDAProviderOptions;
     /// Wraps OrtApi::CreateCUDAProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
-      try Error.check(Api.ort.CreateCUDAProviderOptions.?(@ptrCast(&out)));
+      try Error.check(Api.ort.CreateCUDAProviderOptions.?(apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Wraps OrtApi::UpdateCUDAProviderOptions
     pub fn update(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
       if (keys.len != values.len) return error.InvalidArgs;
-      try Error.check(Api.ort.UpdateCUDAProviderOptions.?(@ptrCast(self), @ptrCast(keys.ptr), @ptrCast(values.ptr), keys.len));
+      try Error.check(Api.ort.UpdateCUDAProviderOptions.?(apiCast(self), apiCast(keys.ptr), apiCast(values.ptr), keys.len));
     }
 
     /// Wraps OrtApi::UpdateCUDAProviderOptionsWithValue
     pub fn updateWithValue(self: *@This(), key: [*:0]const u8, value: *anyopaque) !void {
-      try Error.check(Api.ort.UpdateCUDAProviderOptionsWithValue.?(@ptrCast(self), key, value));
+      try Error.check(Api.ort.UpdateCUDAProviderOptionsWithValue.?(apiCast(self), key, value));
     }
 
     /// Wraps OrtApi::GetCUDAProviderOptionsByName
     /// Get a provider option where its data type is pointer.
     pub fn getByName(self: *const @This(), key: [*:0]const u8) !?*anyopaque {
       var out: ?*anyopaque = null;
-      try Error.check(Api.ort.GetCUDAProviderOptionsByName.?(@ptrCast(self), key, &out));
+      try Error.check(Api.ort.GetCUDAProviderOptionsByName.?(apiCast(self), key, &out));
       return out;
     }
 
     /// Wraps OrtApi::GetCUDAProviderOptionsAsString
     pub fn getOptionsAsString(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(Api.ort.GetCUDAProviderOptionsAsString.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(Api.ort.GetCUDAProviderOptionsAsString.?(apiCast(self), apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Release the options.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseCUDAProviderOptions.?(@ptrCast(self));
+      Api.ort.ReleaseCUDAProviderOptions.?(apiCast(self));
     }
   };
 
   /// CANN Provider Options
   pub const CANN = opaque {
+    pub const Underlying = Api.c.OrtCANNProviderOptions;
     /// Wraps OrtApi::CreateCANNProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
-      try Error.check(Api.ort.CreateCANNProviderOptions.?(@ptrCast(&out)));
+      try Error.check(Api.ort.CreateCANNProviderOptions.?(apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Wraps OrtApi::UpdateCANNProviderOptions
     pub fn update(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
       if (keys.len != values.len) return error.InvalidArgs;
-      try Error.check(Api.ort.UpdateCANNProviderOptions.?(@ptrCast(self), @ptrCast(keys.ptr), @ptrCast(values.ptr), keys.len));
+      try Error.check(Api.ort.UpdateCANNProviderOptions.?(apiCast(self), apiCast(keys.ptr), apiCast(values.ptr), keys.len));
     }
 
     /// Wraps OrtApi::GetCANNProviderOptionsAsString
     pub fn getOptionsAsString(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(Api.ort.GetCANNProviderOptionsAsString.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(Api.ort.GetCANNProviderOptionsAsString.?(apiCast(self), apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Release the options.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseCANNProviderOptions.?(@ptrCast(self));
+      Api.ort.ReleaseCANNProviderOptions.?(apiCast(self));
     }
   };
 
   /// DNNL Provider Options
   pub const Dnnl = opaque {
+    pub const Underlying = Api.c.OrtDnnlProviderOptions;
     /// Wraps OrtApi::CreateDnnlProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
-      try Error.check(Api.ort.CreateDnnlProviderOptions.?(@ptrCast(&out)));
+      try Error.check(Api.ort.CreateDnnlProviderOptions.?(apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Wraps OrtApi::UpdateDnnlProviderOptions
     pub fn update(self: *@This(), keys: []const [*:0]const u8, values: []const [*:0]const u8) !void {
       if (keys.len != values.len) return error.InvalidArgs;
-      try Error.check(Api.ort.UpdateDnnlProviderOptions.?(@ptrCast(self), @ptrCast(keys.ptr), @ptrCast(values.ptr), keys.len));
+      try Error.check(Api.ort.UpdateDnnlProviderOptions.?(apiCast(self), apiCast(keys.ptr), apiCast(values.ptr), keys.len));
     }
 
     /// Wraps OrtApi::GetDnnlProviderOptionsAsString
     pub fn getOptionsAsString(self: *const @This(), allocator: *Allocator) ![*:0]u8 {
       var out: ?[*:0]u8 = null;
-      try Error.check(Api.ort.GetDnnlProviderOptionsAsString.?(@ptrCast(self), @ptrCast(allocator), @ptrCast(&out)));
+      try Error.check(Api.ort.GetDnnlProviderOptionsAsString.?(apiCast(self), apiCast(allocator), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
 
     /// Release the options.
     pub fn deinit(self: *@This()) void {
-      Api.ort.ReleaseDnnlProviderOptions.?(@ptrCast(self));
+      Api.ort.ReleaseDnnlProviderOptions.?(apiCast(self));
     }
   };
 };

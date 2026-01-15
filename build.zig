@@ -28,6 +28,10 @@ fn addTestStep(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
         .target = target,
         .optimize = optimize,
       }),
+      // .test_runner = .{
+      //   .path = b.path("tests/test_runner.zig"),
+      //   .mode = .simple,
+      // }, 
     });
 
     tests.root_module.addImport("onnxruntime", mod);
