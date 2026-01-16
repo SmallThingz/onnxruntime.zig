@@ -92,14 +92,9 @@ pub const Utils = struct {
 
   pub fn ApiCast(comptime T: type) type {
     return switch (@typeInfo(T)) {
-      .pointer => |pi| switch (@typeInfo(pi.child)) {
-        .@"opaque", .@"struct", .@"enum" => CopyPointerAttrs(T, pi.size, pi.child.Underlying),
-      },
-      .optional => |oi| switch (@typeInfo(oi.child)) {
-        .@"struct" => ?oi.child.Underlying,
-        .pointer => |pi| ApiCast(pi.child),
-        else => unreachable,
-      },
+      .@"opaque", .@"struct", .@"enum" => T.Underlying,
+      .pointer => |pi| CopyPointerAttrs(T, if (@typeInfo(pi.child) == .@"opaque") .one else .c, ApiCast(pi.child)),
+      .optional => |oi| ?ApiCast(oi.child),
       else => unreachable,
     };
   }
@@ -107,9 +102,63 @@ pub const Utils = struct {
   pub fn apiCast(anyptr: anytype) ApiCast(@TypeOf(anyptr)) {
     return @ptrCast(anyptr);
   }
+
+  pub fn ApiCastTo(T: type, To: type) type {
+    return switch (@typeInfo(T)) {
+      .@"opaque", .@"struct",  => blk: {
+        std.debug.assert(T == To.Underlying);
+        break :blk To.Underlying;
+      },
+      .@"enum" => blk: {
+        std.debug.assert(T == @typeInfo(To).@"enum".tag_type);
+        break :blk @typeInfo(To).@"enum".tag_type;
+      },
+      .pointer => |pi| blk: {
+        const topi = @typeInfo(To).pointer;
+        break :blk CopyPointerAttrs(T, topi.size, ApiCastTo(pi.child, topi.size.child));
+      },
+      .optional => |oi| ?ApiCastTo(oi.child, @typeInfo(To).optional.child),
+      else => unreachable,
+    };
+  }
+
+  pub fn apiCastTo(anyptr: anytype, comptime To: type) ApiCastTo(@TypeOf(anyptr), To) {
+    return @ptrCast(anyptr);
+  }
+
+  pub fn CStr(Str: type) type {
+    if (Str == [*:0]const u8) return [*c]const u8;
+    if (Str == [*:0]u8) return [*c]u8;
+    return switch (@typeInfo(Str)) {
+      .pointer => |pi| CStr(pi.child),
+      .optional => |oi| ?CStr(oi.child),
+      else => unreachable,
+    };
+  }
+
+  pub fn cStr(str: anytype) CStr(@TypeOf(str)) {
+    return @ptrCast(str);
+  }
+
+  pub fn CStrTo(Str: type) type {
+    if (Str == [*c]const u8) return [*:0]const u8;
+    if (Str == [*c]u8) return [*:0]u8;
+    return switch (@typeInfo(Str)) {
+      .pointer => |pi| CStrTo(pi.child),
+      .optional => |oi| ?CStrTo(oi.child),
+      else => unreachable,
+    };
+  }
+
+  pub fn cStrTo(str: anytype) CStrTo(@TypeOf(str)) {
+    return @ptrCast(str);
+  }
 };
 
-const apiCast = Api.apiCast;
+const apiCast = Utils.apiCast;
+const apiCastTo = Utils.apiCastTo;
+const cStr = Utils.cStr;
+const cStrTo = Utils.cStrTo;
 
 /// This is usually used by vendors
 pub const Ep = struct {
@@ -759,42 +808,41 @@ pub const Ep = struct {
     /// Returns the name of the execution provider (e.g., "CUDA", "CPU").
     /// Wraps OrtApi::EpDevice_EpName
     pub fn getEpName(self: *const @This()) [*:0]const u8 {
-      return apiCast(Api.ort.EpDevice_EpName.?(apiCast(self)));
+      return cStrTo(Api.ort.EpDevice_EpName.?(apiCast(self)));
     }
 
     /// Returns the name of the execution provider's vendor.
     /// Wraps OrtApi::EpDevice_EpVendor
     pub fn getEpVendor(self: *const @This()) [*:0]const u8 {
-      return apiCast(Api.ort.EpDevice_EpVendor.?(apiCast(self)));
+      return cStrTo(Api.ort.EpDevice_EpVendor.?(apiCast(self)));
     }
 
     /// Returns an OrtKeyValuePairs instance containing the metadata for the EP device.
     /// Note: ORT owns this instance; do NOT call deinit on it.
     /// Wraps OrtApi::EpDevice_EpMetadata
     pub fn getEpMetadata(self: *const @This()) *const KeyValuePairs {
-      return apiCast(Api.ort.EpDevice_EpMetadata.?(apiCast(self)));
+      return apiCastTo(Api.ort.EpDevice_EpMetadata.?(apiCast(self)), *const KeyValuePairs);
     }
 
     /// Returns an OrtKeyValuePairs instance containing the options for the EP device.
     /// Note: ORT owns this instance; do NOT call deinit on it.
     /// Wraps OrtApi::EpDevice_EpOptions
     pub fn getEpOptions(self: *const @This()) *const KeyValuePairs {
-      return apiCast(Api.ort.EpDevice_EpOptions.?(apiCast(self)));
+      return apiCastTo(Api.ort.EpDevice_EpOptions.?(apiCast(self)), *const KeyValuePairs);
     }
 
     /// Returns the underlying HardwareDevice (physical CPU/GPU/NPU) instance for this EP device.
     /// Note: ORT owns this instance.
     /// Wraps OrtApi::EpDevice_Device
     pub fn getHardwareDevice(self: *const @This()) *const HardwareDevice {
-      return apiCast(Api.ort.EpDevice_Device.?(apiCast(self)));
+      return apiCastTo(Api.ort.EpDevice_Device.?(apiCast(self)), *const HardwareDevice);
     }
 
     /// Get the OrtMemoryInfo for the device.
     /// If memory_type is DEFAULT and null is returned, the EP uses CPU memory.
     /// Wraps OrtApi::EpDevice_MemoryInfo
     pub fn getMemoryInfo(self: *const @This(), mem_type: Allocator.DeviceMemoryType) ?*const Allocator.MemoryInfo {
-      const ptr = Api.ort.EpDevice_MemoryInfo.?(apiCast(self), @intFromEnum(mem_type));
-      return apiCast(ptr);
+      return apiCastTo(Api.ort.EpDevice_MemoryInfo.?(apiCast(self), @intFromEnum(mem_type)), ?*const Allocator.MemoryInfo);
     }
 
     /// Register an allocator with the OrtEpDevice.
@@ -2148,7 +2196,7 @@ pub const SyncStream = opaque {
   ///
   /// Remarks: There should always be an OrtSyncStreamImpl associated with an OrtSyncStream instance that the EP gets.
   pub fn getImpl(self: *const @This()) *const Ep.SyncStreamImpl {
-    return apiCast(Ep.api.underlying.SyncStream_GetImpl.?(apiCast(self)));
+    return apiCastTo(Ep.api.underlying.SyncStream_GetImpl.?(apiCast(self)), Ep.SyncStreamImpl);
   }
 
   /// Get the current sync ID for a stream.
@@ -2468,7 +2516,7 @@ pub const Allocator = struct {
     ///
     /// since Version 1.23.
     pub fn getDevice(self: *const @This()) !*const Allocator.MemoryDevice {
-      return apiCast(Ep.api.underlying.MemoryInfo_GetMemoryDevice.?(apiCast(self)) orelse return error.OutOfMemory);
+      return apiCastTo(Ep.api.underlying.MemoryInfo_GetMemoryDevice.?(apiCast(self)) orelse return error.OutOfMemory, Allocator.MemoryDevice);
     }
 
     /// Get OrtDevice type from MemoryInfo
@@ -2908,15 +2956,6 @@ pub const TensorTypeAndShapeInfo = struct {
       return self orelse error.OutOfMemory;
     }
 
-    pub fn getSymbolicDimensions(self: *const @This(), gpa: std.mem.Allocator) ![][*:0]const u8 {
-      const count = try self.dimensionsCount();
-      const out_ptr = try gpa.alloc([*:0]const u8, count);
-      errdefer gpa.free(out_ptr);
-
-      try Error.check(Api.ort.GetSymbolicDimensions.?(apiCast(self), apiCast(out_ptr.ptr), count));
-      return out_ptr;
-    }
-
     /// Set element type in ::OrtTensorTypeAndShapeInfo
     pub fn setElementType(self: *@This(), dtype: Value.Sub.Tensor.ElementDataType) !void {
       try Error.check(Api.ort.SetTensorElementType.?(apiCast(self), @intFromEnum(dtype)));
@@ -2944,6 +2983,10 @@ pub const TensorTypeAndShapeInfo = struct {
       var out: usize = 0;
       try Error.check(Api.ort.GetDimensionsCount.?(apiCast(self), &out));
       return out;
+    }
+
+    pub fn getSymbolicDimensions(self: *const @This(), out: [][*:0]const u8) !void {
+      try Error.check(Api.ort.GetSymbolicDimensions.?(apiCast(self), apiCast(out.ptr), out.len));
     }
 
     /// Get dimensions in ::OrtTensorTypeAndShapeInfo
@@ -2980,8 +3023,8 @@ pub const Value = opaque {
 
     /// Get the type information.
     /// The returned TypeInfo must be deinitialized by the caller.
-    pub fn getTypeInfo(self: *const @This()) !*TypeInfo {
-      var out: ?*TypeInfo = null;
+    pub fn getTypeInfo(self: *const @This()) !*const TypeInfo {
+      var out: ?*const TypeInfo = null;
       try Error.check(Api.ort.GetValueInfoTypeInfo.?(apiCast(self), apiCast(&out)));
       return out orelse error.OutOfMemory;
     }
@@ -3317,13 +3360,6 @@ pub const Value = opaque {
         try Error.check(Api.ort.GetOpaqueValue.?(domain_name, type_name, apiCast(self), apiCast(out.ptr), out.len * @sizeOf(Out)));
       }
 
-      pub fn getDataAlloc(self: *const @This(), comptime Out: type, len: usize, gpa: std.mem.Allocator, domain_name: [*:0]const u8, type_name: [*:0]const u8) ![]u8 {
-        const out = try gpa.alloc(Out, len);
-        errdefer gpa.free(out);
-        try self.getData(Out, out, domain_name, type_name);
-        return out;
-      }
-
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return apiCast(self_ptr);
       }
@@ -3588,7 +3624,7 @@ pub const Value = opaque {
   ///
   /// since Version 1.23.
   pub fn getMemoryDevice(self: *const @This()) !*const Allocator.MemoryDevice {
-    return apiCast(Ep.api.underlying.Value_GetMemoryDevice.?(apiCast(self)) orelse return error.OutOfMemory);
+    return apiCastTo(Ep.api.underlying.Value_GetMemoryDevice.?(apiCast(self)) orelse return error.OutOfMemory, Allocator.MemoryDevice);
   }
 };
 
@@ -3676,12 +3712,8 @@ pub const Node = opaque {
 
   /// Returns the node's inputs as ValueInfo instances.
   /// The returned slice is allocated using the provided allocator.
-  pub fn getInputs(self: *const @This(), gpa: std.mem.Allocator) ![]*const Value.Info {
-    const count = try self.getInputCount();
-    const out_ptr = try gpa.alloc(*const Value.Info, count);
-    errdefer gpa.free(out_ptr);
-    try Error.check(Api.ort.Node_GetInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getInputs(self: *const @This(), out: []*const Value.Info) !void {
+    try Error.check(Api.ort.Node_GetInputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Returns the number of node outputs.
@@ -3693,13 +3725,8 @@ pub const Node = opaque {
 
   /// Returns the node's outputs as ValueInfo instances.
   /// The returned slice is allocated using the provided allocator.
-  pub fn getOutputs(self: *const @This(), gpa: std.mem.Allocator) ![]*const Value.Info {
-    const count = try self.getOutputCount();
-    const out_ptr = try gpa.alloc(*const Value.Info, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Node_GetOutputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getOutputs(self: *const @This(), out: []?*const Value.Info) !void {
+    try Error.check(Api.ort.Node_GetOutputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Returns the number of node implicit inputs.
@@ -3711,13 +3738,10 @@ pub const Node = opaque {
 
   /// Get the implicit inputs, as ValueInfo instances, that are used within the given node's subgraphs.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getImplicitInputs(self: *const @This(), gpa: std.mem.Allocator) ![]*const Value.Info {
-    const count = try self.getImplicitInputCount();
-    const out_ptr = try gpa.alloc(*const Value.Info, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Node_GetImplicitInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getImplicitInputs(self: *const @This(), out: []*const Value.Info) !void {
+    // we need to use @ptrCast here because the api tales optional pointers but never sets to null
+    const out_ptr: [*]?*const Value.Info = @ptrCast(out.ptr);
+    try Error.check(Api.ort.Node_GetImplicitInputs.?(apiCast(self), apiCast(out_ptr), out.len));
   }
 
   /// Returns the number of node attributes.
@@ -3729,13 +3753,10 @@ pub const Node = opaque {
 
   /// Returns a node's attributes as OpAttr instances.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getAttributes(self: *const @This(), gpa: std.mem.Allocator) ![]*const OpAttr {
-    const count = try self.getAttributeCount();
-    const out_ptr = try gpa.alloc(*const OpAttr, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Node_GetAttributes.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getAttributes(self: *const @This(), out: []*const OpAttr) !void {
+    // we need to use @ptrCast here because the api tales optional pointers but never sets to null
+    const out_ptr: [*]?*const OpAttr = @ptrCast(out.ptr);
+    try Error.check(Api.ort.Node_GetAttributes.?(apiCast(self), apiCast(out_ptr), out.len));
   }
 
   /// Gets the Node's attribute as OpAttr by name.
@@ -3808,7 +3829,7 @@ pub const Node = opaque {
 };
 
 pub const Graph = opaque {
-  pub const underlying = Api.c.OrtGraph;
+  pub const Underlying = Api.c.OrtGraph;
   /// Create an empty OrtGraph.
   /// Note: Requires Model Editor API initialization.
   pub fn init() !*@This() {
@@ -3901,28 +3922,14 @@ pub const Graph = opaque {
 
   /// Returns the operator sets that the graph's model uses.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getOperatorSets(self: *const @This(), gpa: std.mem.Allocator) ![]OperatorSet {
-    const count = try self.getOperatorSetCount();
-    
-    // Temporary arrays for C API
-    const domains = try gpa.alloc([*:0]const u8, count);
-    defer gpa.free(domains);
-    const versions = try gpa.alloc(i64, count);
-    defer gpa.free(versions);
-
+  pub fn getOperatorSets(self: *const @This(), out_domains: [][*:0]const u8, out_versions: []i64) !void {
+    std.debug.assert(out_domains.len == out_versions.len);
     try Error.check(Api.ort.Graph_GetOperatorSets.?(
       apiCast(self), 
-      apiCast(domains.ptr), 
-      apiCast(versions.ptr), 
-      count
+      apiCast(out_domains.ptr), 
+      apiCast(out_versions.ptr), 
+      out_domains.len,
     ));
-
-    // Package into Zig struct
-    const out = try gpa.alloc(OperatorSet, count);
-    for (0..count) |i| {
-      out[i] = .{ .domain = domains[i], .version = versions[i] };
-    }
-    return out;
   }
 
   /// Returns the number of graph inputs.
@@ -3934,13 +3941,8 @@ pub const Graph = opaque {
 
   /// Returns the graph's inputs as Value.Info instances.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getInputs(self: *const @This(), gpa: std.mem.Allocator) ![]*const Value.Info {
-    const count = try self.getInputCount();
-    const out_ptr = try gpa.alloc(*const Value.Info, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Graph_GetInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getInputs(self: *const @This(), out: []*const Value.Info) !void {
+    try Error.check(Api.ort.Graph_GetInputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Returns the number of graph outputs.
@@ -3952,13 +3954,8 @@ pub const Graph = opaque {
 
   /// Returns the graph's outputs as Value.Info instances.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getOutputs(self: *const @This(), gpa: std.mem.Allocator) ![]*const Value.Info {
-    const count = try self.getOutputCount();
-    const out_ptr = try gpa.alloc(*const Value.Info, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Graph_GetOutputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getOutputs(self: *const @This(), out: []*const Value.Info) !void {
+    try Error.check(Api.ort.Graph_GetOutputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Returns the number of graph initializers.
@@ -3971,13 +3968,8 @@ pub const Graph = opaque {
   /// Returns the graph's initializers as Value.Info instances.
   /// To get the actual data, call `Value.Info.getInitializerValue`.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getInitializers(self: *const @This(), gpa: std.mem.Allocator) ![]*const Value.Info {
-    const count = try self.getInitializerCount();
-    const out_ptr = try gpa.alloc(*const Value.Info, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Graph_GetInitializers.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getInitializers(self: *const @This(), out: []*const Value.Info) !void {
+    try Error.check(Api.ort.Graph_GetInitializers.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Returns the number of graph nodes.
@@ -3989,13 +3981,8 @@ pub const Graph = opaque {
 
   /// Returns the graph's nodes as Node instances.
   /// The returned slice is allocated using the provided gpa.
-  pub fn getNodes(self: *const @This(), gpa: std.mem.Allocator) ![]*const Node {
-    const count = try self.getNodeCount();
-    const out_ptr = try gpa.alloc(*const Node, count);
-    errdefer gpa.free(out_ptr);
-
-    try Error.check(Api.ort.Graph_GetNodes.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getNodes(self: *const @This(), out: []*const Node) !void {
+    try Error.check(Api.ort.Graph_GetNodes.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Get the parent node for the given graph, if any exists.
@@ -4652,18 +4639,18 @@ pub const Session = struct {
         try Error.check(Api.ort.GetSessionConfigEntry.?(apiCast(self), apiCast(key), apiCast(out_ptr), out_len));
       }
 
+      pub fn getConfigEntryCount(self: *const C, key: [*:0]const u8) usize {
+        var out: usize = 0;
+        self._getConfigEntry(key, @ptrCast(@constCast(&[_]u8{0})), &out);
+        return out - 1;
+      }
+
       /// Get a session configuration value.
       /// allocator: Used to allocate the returned string.
-      pub fn getConfigEntry(self: *const @This(), key: [*:0]const u8, gpa: std.mem.Allocator) ![:0]u8 {
-        var size: usize = 0;
-        // First call to get size
-        self._getConfigEntry(key, apiCast(@constCast(&[_]u8{})), &size) catch {};
-        const buf = try gpa.alloc(u8, size);
-        errdefer gpa.free(buf);
-
-        try self._getConfigEntry(key, apiCast(buf.ptr), &size);
-        std.debug.assert(buf.len == size);
-        return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
+      pub fn getConfigEntry(self: *const @This(), key: [*:0]const u8, out: [:0]u8) !void {
+        var size: usize = out.len + 1;
+        try self._getConfigEntry(key, apiCast(out.ptr), &size);
+        std.debug.assert(out.len + 1 == size);
       }
 
       /// Register custom ops using a registration function name.
@@ -5161,28 +5148,16 @@ pub const Session = struct {
     return out orelse error.OutOfMemory;
   }
 
-  pub fn getMemoryInfoForInputs(self: *const @This(), allocator: std.mem.Allocator) ![]*const Allocator.MemoryInfo {
-    const count = try self.getInputCount();
-    const out_ptr = try allocator.alloc(*const Allocator.MemoryInfo, count);
-    errdefer allocator.free(out_ptr);
-    try Error.check(Api.ort.SessionGetMemoryInfoForInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getMemoryInfoForInputs(self: *const @This(), out: []*const Allocator.MemoryInfo) !void {
+    try Error.check(Api.ort.SessionGetMemoryInfoForInputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
-  pub fn getMemoryInfoForOutputs(self: *const @This(), allocator: std.mem.Allocator) ![]*const Allocator.MemoryInfo {
-    const count = try self.getOutputCount();
-    const out_ptr = try allocator.alloc(*const Allocator.MemoryInfo, count);
-    errdefer allocator.free(out_ptr);
-    try Error.check(Api.ort.SessionGetMemoryInfoForOutputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getMemoryInfoForOutputs(self: *const @This(), out: []*const Allocator.MemoryInfo) !void {
+    try Error.check(Api.ort.SessionGetMemoryInfoForOutputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
-  pub fn getEpDeviceForInputs(self: *const @This(), allocator: std.mem.Allocator) ![]?*const Ep.Device {
-    const count = try self.getInputCount();
-    const out_ptr = try allocator.alloc(?*const Ep.Device, count);
-    errdefer allocator.free(out_ptr);
-    try Error.check(Api.ort.SessionGetEpDeviceForInputs.?(apiCast(self), apiCast(out_ptr.ptr), count));
-    return out_ptr;
+  pub fn getEpDeviceForInputs(self: *const @This(), out: []?*const Ep.Device) !void {
+    try Error.check(Api.ort.SessionGetEpDeviceForInputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
 
   /// Release the Session object.
@@ -5431,18 +5406,16 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfo_GetNodeName.?(apiCast(self), apiCast(out_ptr), out_size));
   }
 
-  pub fn getNodeName(self: *const @This(), gpa: std.mem.Allocator) ![:0]u8 {
-    var size: usize = 0;
-    // First call to get size (pass null)
-    self._getNodeName(apiCast(@constCast(&[_]u8{})), &size) catch {};
-    std.debug.assert(size != 0);
+  pub fn getNodeNameCount(self: *const @This()) !usize {
+    var out: usize = 0;
+    self._getNodeName(apiCast(@constCast(&[_]u8{0})), &out) catch {};
+    return out - 1;
+  }
 
-    const buf = try gpa.alloc(u8, size);
-    errdefer gpa.free(buf);
-
-    try self._getNodeName(apiCast(buf.ptr), &size);
-    std.debug.assert(buf.len == size);
-    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
+  pub fn getNodeName(self: *const @This(), out: [:0]u8) !void {
+    var size: usize = out.len + 1;
+    try self._getNodeName(apiCast(out.ptr), &size);
+    std.debug.assert(out.len + 1 == size);
   }
   
   pub fn getAttributeFloat(self: *const @This(), name: [*:0]const u8) !f32 {
@@ -5461,17 +5434,16 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfoGetAttribute_string.?(apiCast(self), name, apiCast(out_ptr), out_len));
   }
 
-  pub fn getAttributeString(self: *const @This(), name: [*:0]const u8, gpa: std.mem.Allocator) ![:0]u8 {
-    var size: usize = 0;
-    // First call get size
-    self._getAttributeString(name, apiCast(@constCast(&[_]u8{})), &size) catch {};
+  pub fn getAttributeStringCount(self: *const @This(), name: [*:0]const u8) usize {
+    var out: usize = 0;
+    self._getAttributeString(name, apiCast(@constCast(&[_]u8{0})), &out) catch {};
+    return out - 1;
+  }
 
-    const buf = try gpa.alloc(u8, size);
-    errdefer gpa.free(buf);
-
-    try self._getAttributeString(name, apiCast(buf.ptr), &size);
-    std.debug.assert(buf.len == size);
-    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
+  pub fn getAttributeString(self: *const @This(), name: [*:0]const u8, out: [:0]u8) !void {
+    var size: usize = out.len + 1;
+    try self._getAttributeString(name, apiCast(out.ptr), &size);
+    std.debug.assert(out.len + 1 == size);
   }
   
   pub fn getAttributeTensor(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
@@ -5498,40 +5470,38 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfo_GetInputName.?(apiCast(self), index, apiCast(out_ptr), out_len));
   }
 
+  pub fn getInputNameCount(self: *const @This()) !usize {
+    var out: usize = 0;
+    self._getInputName(apiCast(@constCast(&[_]u8{0})), &out) catch {};
+    return out - 1;
+  }
+
   /// Get the name of an input.
   /// allocator: The allocator used to allocate the returned string buffer.
   /// Returns a null-terminated string.
-  pub fn getInputName(self: *const @This(), index: usize, gpa: std.mem.Allocator) ![:0]u8 {
-    var size: usize = 0;
-    // First call to get the required size
-    self._getInputName(index, apiCast(@constCast(&[_]u8{})), &size) catch {};
-
-    const buf = try gpa.alloc(u8, size);
-    errdefer gpa.free(buf);
-
-    // Second call to fill the buffer
-    try self._getInputName(index, apiCast(buf.ptr), &size);
-    std.debug.assert(buf.len == size);
-    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
+  pub fn getInputName(self: *const @This(), index: usize, out: [:0]u8) !void {
+    var size: usize = out.len + 1;
+    try self._getInputName(index, apiCast(out.ptr), &size);
+    std.debug.assert(out.len + 1 == size);
   }
 
   pub fn _getOutputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
     try Error.check(Api.ort.KernelInfo_GetOutputName.?(apiCast(self), index, apiCast(out_ptr), out_len));
   }
+
+  pub fn getOutputNameCount(self: *const @This()) !usize {
+    var out: usize = 0;
+    self._getOutputName(apiCast(@constCast(&[_]u8{0})), &out) catch {};
+    return out - 1;
+  }
+
   /// Get the name of an output.
   /// allocator: The allocator used to allocate the returned string buffer.
   /// Returns a null-terminated string.
-  pub fn getOutputName(self: *const @This(), index: usize, gpa: std.mem.Allocator) ![:0]u8 {
-    var size: usize = 0;
-    // First call to get the required size
-    self._getOutputName(index, apiCast(@constCast(&[_]u8{})), &size) catch {};
-    const buf = try gpa.alloc(u8, size);
-    errdefer gpa.free(buf);
-
-    // Second call to fill the buffer
-    try self._getOutputName(index, apiCast(buf.ptr), &size);
-    std.debug.assert(buf.len == size);
-    return @as([*:0]u8, apiCast(buf.ptr))[0 .. size - 1: 0];
+  pub fn getOutputName(self: *const @This(), index: usize, out: [:0]u8) !void {
+    var size: usize = out.len + 1;
+    try self._getOutputName(index, apiCast(out.ptr), &size);
+    std.debug.assert(out.len + 1 == size);
   }
 
   /// Get the type information for an input.
@@ -5551,39 +5521,39 @@ pub const KernelInfo = opaque {
   }
 
   pub fn _getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out_ptr: [*]f32, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttributeArray_float.?(apiCast(self), name, apiCast(out_ptr), out_len));
+    try Error.check(Api.ort.KernelInfoGetAttributeArray_float.?(apiCast(self), name, out_ptr, out_len));
+  }
+
+  pub fn getAttributeArrayFloatCount(self: *const @This(), name: [*:0]const u8) !usize {
+    var out: usize = 0;
+    self._getAttributeArrayFloat(name, apiCast(@constCast(&[_]f32{})), &out) catch {};
+    return out;
   }
 
   /// Fetch a float array stored as an attribute.
   /// allocator: The allocator used to create the slice to hold the result.
-  pub fn getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, gpa: std.mem.Allocator) ![]f32 {
-    var size: usize = 0;
-    // First call to get element count
-    self._getAttributeArrayFloat(name, @constCast(&[_]f32{}), &size) catch {};
-    const buf = try gpa.alloc(f32, size);
-
-    // Second call to fill data
-    try self._getAttributeArrayFloat(name, buf.ptr, &size);
-    std.debug.assert(buf.len == size);
-    return buf;
+  pub fn getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out: []f32) !void {
+    var size: usize = out.len;
+    try self._getAttributeArrayFloat(name, out.ptr, &size);
+    std.debug.assert(out.len == size);
   }
 
   pub fn _getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out_ptr: [*]i64, out_len: *usize) !void {
     try Error.check(Api.ort.KernelInfoGetAttributeArray_int64.?(apiCast(self), name, apiCast(out_ptr), out_len));
   }
 
+  pub fn getAttributeArrayIntCount(self: *const @This(), name: [*:0]const u8) !usize {
+    var out: usize = 0;
+    self._getAttributeArrayInt(name, apiCast(@constCast(&[_]i64{})), &out) catch {};
+    return out;
+  }
+
   /// Fetch an int64 array stored as an attribute.
   /// allocator: The allocator used to create the slice to hold the result.
-  pub fn getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, gpa: std.mem.Allocator) ![]i64 {
+  pub fn getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out: []i64) !void {
     var size: usize = 0;
-    // First call to get element count
-    self._getAttributeArrayInt(name, @constCast(&[_]i64{}), &size) catch {};
-    const buf = try gpa.alloc(i64, size);
-
-    // Second call to fill data
-    try self._getAttributeArrayInt(name, buf.ptr, &size);
-    std.debug.assert(buf.len == size);
-    return buf;
+    try self._getAttributeArrayInt(name, out.ptr, &size);
+    std.debug.assert(out.len == size);
   }
 
   /// Get allocator from KernelInfo for a specific memory type. 
@@ -5664,7 +5634,7 @@ pub const HardwareDevice = opaque {
   /// Returns the hardware device's vendor name as a null-terminated string. DO NOT FREE
   /// Wraps OrtApi::HardwareDevice_Vendor
   pub fn getVendor(self: *const @This()) [*:0]const u8 {
-    return apiCast(Api.ort.HardwareDevice_Vendor.?(apiCast(self)));
+    return cStrTo(Api.ort.HardwareDevice_Vendor.?(apiCast(self)));
   }
 
   /// Returns the hardware device's vendor identifier (e.g., PCI Vendor ID).
@@ -6182,7 +6152,7 @@ pub const ProviderOptions = struct {
 
   /// CUDA Provider Options (V2)
   pub const CUDA = opaque {
-    pub const Underlying = Api.c.OrtCUDAProviderOptions;
+    pub const Underlying = Api.c.OrtCUDAProviderOptionsV2;
     /// Wraps OrtApi::CreateCUDAProviderOptions
     pub fn init() !*@This() {
       var out: ?*@This() = null;
