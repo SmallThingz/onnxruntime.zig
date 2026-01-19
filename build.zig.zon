@@ -1,15 +1,14 @@
 .{
   .name = .onnxruntime,
-  .version = "0.0.0",
+  .version = "0.1.0",
   .fingerprint = 0xc45be4c79fc83c67,
   .minimum_zig_version = "0.15.0",
-  .dependencies = .{
-  },
+  .dependencies = .{},
   .paths = .{
     "build.zig",
     "build.zig.zon",
     "root.zig",
-    //"LICENSE",
-    //"README.md",
+    "LICENSE",
+    "README.md",
   },
 }
