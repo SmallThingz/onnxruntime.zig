@@ -28,11 +28,12 @@ pub const Utils = struct {
           self._vals[self.len] = switch (@typeInfo(@TypeOf(v))) {
             .optional => |oi| switch (@typeInfo(oi.child)) {
               .int => v.?,
-              else => @compileError("unreachable"),
+              else => unreachable,
             },
             .@"enum" => @intFromEnum(v),
             .int => v,
-            else => @compileError("unreachable"),
+            .bool => @intFromBool(v),
+            else => unreachable,
           };
         } else {
           self._vals[self.len] = switch (@typeInfo(@TypeOf(v))) {
@@ -40,16 +41,16 @@ pub const Utils = struct {
               .pointer => |pi| switch (pi.size) {
                 .many => v.?,
                 .slice => v.?.ptr,
-                .c, .one => @compileError("unreachable"),
+                .c, .one => unreachable,
               },
-              else => @compileError("unreachable"),
+              else => unreachable,
             },
             .pointer => |pi| switch (pi.size) {
               .many => v,
               .slice => v.ptr,
-              .c, .one => @compileError("unreachable"),
+              .c, .one => unreachable,
             },
-            else => @compileError("unreachable"),
+            else => unreachable,
           };
         }
         self.len += 1;
@@ -120,8 +121,31 @@ pub const Utils = struct {
     return @ptrCast(anyptr);
   }
 
+  // fn ApiCastTo(T: type, To: type) type {
+  //   return switch (@typeInfo(T)) {
+  //     .@"opaque", .@"struct",  => blk: {
+  //       std.debug.assert(T == To.Underlying);
+  //       break :blk To.Underlying;
+  //     },
+  //     .@"enum" => blk: {
+  //       std.debug.assert(T == @typeInfo(To).@"enum".tag_type);
+  //       break :blk @typeInfo(To).@"enum".tag_type;
+  //     },
+  //     .pointer => |pi| switch (@typeInfo(To)) {
+  //       .pointer => |topi| CopyPointerAttrs(T, topi.size, ApiCastTo(pi.child, topi.child)),
+  //       .optional => |tooi| ?blk: {
+  //         const topi = @typeInfo(tooi.child);
+  //         break :blk CopyPointerAttrs(T, topi.size, ApiCastTo(pi.child, topi.child));
+  //       },
+  //       else => unreachable,
+  //     },
+  //     else => unreachable,
+  //   };
+  // }
+
   fn ApiCastTo(From: type, To: type) type {
-    std.debug.assert(ApiCast(To) == From);
+    const CastedFrom = ApiCast(To);
+    if (CastedFrom != From) @compileError(std.fmt.comptimePrint("From: {s}; Casted: {s}; To: {s}", .{@typeName(From), @typeName(CastedFrom), @typeName(To)}));
     return To;
   }
 
@@ -266,7 +290,7 @@ pub const Ep = struct {
     /// Initialize the Ep structure with vtables pointing to the provided Implementer type.
     ///
     /// Requirements for Implementer (T):
-    /// - Must have a field `ep: Ep`.
+    /// - Must have a field `ep: Ep.Interface`.
     /// - fn getName(self: *const T) [*:0]const u8
     /// - fn getCapability(self: *T, graph: *const Graph, support_info: *GraphSupportInfo) !void
     /// - fn compile(self: *T, graphs: []const *const Graph, fused_nodes: []const *const Node, node_compute_infos: []*NodeCompute.Info, ep_context_nodes: []*Node) !void
@@ -283,88 +307,93 @@ pub const Ep = struct {
     /// - fn createSyncStreamForDevice(self: *T, device: *const Allocator.MemoryDevice) !?*SyncStreamImpl
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
-        fn getSelf(ptr: ?*const Api.c.OrtEp) *T {
-          return @fieldParentPtr("ep", @as(*Ep, @constCast(apiCast(ptr.?))));
+        fn getSelf(ptr: [*c]const Api.c.OrtEp) *T {
+          return @constCast(@fieldParentPtr("ep", apiCastTo(ptr.?, *const Ep.Interface)));
         }
 
-        fn getName(ptr: ?*const Api.c.OrtEp) callconv(.c) [*c]const u8 {
+        fn getName(ptr: [*c]const Api.c.OrtEp) callconv(.c) [*c]const u8 {
           return cStr(getSelf(ptr).getName());
         }
 
-        fn getCapability(ptr: ?*Api.c.OrtEp, graph: ?*const Api.c.OrtGraph, info: ?*Api.c.OrtEpGraphSupportInfo) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).getCapability(apiCast(graph.?), apiCast(info.?)) catch |err|
+        fn getCapability(ptr: [*c]Api.c.OrtEp, graph: ?*const Api.c.OrtGraph, info: ?*Api.c.OrtEpGraphSupportInfo) callconv(.c) ?*Api.c.OrtStatus {
+          getSelf(ptr).getCapability(apiCastTo(graph.?, *const Graph), apiCastTo(info.?, *GraphSupportInfo)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn compile(
-          ptr: ?*Api.c.OrtEp,
+          ptr: [*c]Api.c.OrtEp,
           graphs: [*c]?*const Api.c.OrtGraph,
           fused: [*c]?*const Api.c.OrtNode,
           count: usize,
-          infos_out: [*c]?*Api.c.OrtNodeComputeInfo,
+          infos_out: [*c][*c]Api.c.OrtNodeComputeInfo,
           context_nodes_out: [*c]?*Api.c.OrtNode,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const g_slice = @as([*]const *const Graph, apiCast(graphs))[0..count];
-          const f_slice = @as([*]const *const Node, apiCast(fused))[0..count];
-          const i_slice = @as([*]*NodeCompute.Info, apiCast(infos_out))[0..count];
-          const c_slice = @as([*]*Node, apiCast(context_nodes_out))[0..count];
+          const g_slice_optional = apiCastTo(graphs, [*]?*const Graph);
+          const f_slice_optional = apiCastTo(fused, [*]?*const Node);
+          const i_slice_optional = apiCastTo(infos_out, [*]?*NodeCompute.Info);
+          const c_slice_optional = apiCastTo(context_nodes_out, [*]?*Node);
+
+          const g_slice = @as([*]*const Graph, @ptrCast(g_slice_optional))[0..count];
+          const f_slice = @as([*]*const Node, @ptrCast(f_slice_optional))[0..count];
+          const i_slice = @as([*]*NodeCompute.Info, @ptrCast(i_slice_optional))[0..count];
+          const c_slice = @as([*]*Node, @ptrCast(c_slice_optional))[0..count];
 
           getSelf(ptr).compile(g_slice, f_slice, i_slice, c_slice) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn releaseNodeComputeInfos(ptr: ?*Api.c.OrtEp, infos: [*c]?*Api.c.OrtNodeComputeInfo, count: usize) callconv(.c) void {
-          getSelf(ptr).releaseNodeComputeInfos(@as([*]*NodeCompute.Info, apiCast(infos))[0..count]);
+        fn releaseNodeComputeInfos(ptr: [*c]Api.c.OrtEp, infos: [*c][*c]Api.c.OrtNodeComputeInfo, count: usize) callconv(.c) void {
+          getSelf(ptr).releaseNodeComputeInfos(apiCastTo(infos, [*]*NodeCompute.Info)[0..count]);
         }
 
-        fn getPreferredDataLayout(ptr: ?*Api.c.OrtEp, layout_out: ?*Api.c.OrtEpDataLayout) callconv(.c) ?*Api.c.OrtStatus {
+        fn getPreferredDataLayout(ptr: [*c]Api.c.OrtEp, layout_out: [*c]Api.c.OrtEpDataLayout) callconv(.c) ?*Api.c.OrtStatus {
           const layout = getSelf(ptr).getPreferredDataLayout() catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           layout_out.?.* = @intFromEnum(layout);
           return null;
         }
 
-        fn shouldConvertDataLayoutForOp(ptr: ?*Api.c.OrtEp, domain: [*:0]const u8, op_type: [*:0]const u8, layout: Api.c.OrtEpDataLayout, out: ?*c_int) callconv(.c) ?*Api.c.OrtStatus {
+        fn shouldConvertDataLayoutForOp(ptr: [*c]Api.c.OrtEp, domain: [*:0]const u8, op_type: [*:0]const u8, layout: Api.c.OrtEpDataLayout, out: [*c]c_int) callconv(.c) ?*Api.c.OrtStatus {
           out.?.* = getSelf(ptr).shouldConvertDataLayoutForOp(domain, op_type, @enumFromInt(layout));
           return null;
         }
 
-        fn setDynamicOptions(ptr: ?*Api.c.OrtEp, keys: [*c]const [*:0]const u8, vals: [*c]const [*:0]const u8, count: usize) callconv(.c) ?*Api.c.OrtStatus {
+        fn setDynamicOptions(ptr: [*c]Api.c.OrtEp, keys: [*c]const [*:0]const u8, vals: [*c]const [*:0]const u8, count: usize) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(ptr).setDynamicOptions(keys[0..count], vals[0..count]) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn onRunStart(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).onRunStart(apiCast(options.?)) catch |err|
+        fn onRunStart(ptr: [*c]Api.c.OrtEp, options: [*c]const Api.c.OrtRunOptions) callconv(.c) ?*Api.c.OrtStatus {
+          getSelf(ptr).onRunStart(apiCastTo(options.?, *const RunOptions)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn onRunEnd(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions, sync: bool) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(ptr).onRunEnd(apiCast(options.?), sync) catch |err|
+        fn onRunEnd(ptr: [*c]Api.c.OrtEp, options: [*c]const Api.c.OrtRunOptions, sync: bool) callconv(.c) ?*Api.c.OrtStatus {
+          getSelf(ptr).onRunEnd(apiCastTo(options.?, *const RunOptions), sync) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn createAllocator(ptr: ?*Api.c.OrtEp, info: ?*const Api.c.OrtMemoryInfo, out: ?*?*Api.c.OrtAllocator) callconv(.c) ?*Api.c.OrtStatus {
-          const alloc = getSelf(ptr).createAllocator(apiCast(info.?)) catch |err|
+        fn createAllocator(ptr: [*c]Api.c.OrtEp, info: [*c]const Api.c.OrtMemoryInfo, out: [*c][*c]Api.c.OrtAllocator) callconv(.c) ?*Api.c.OrtStatus {
+          const alloc = getSelf(ptr).createAllocator(apiCastTo(info.?, *const Allocator.MemoryInfo)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(alloc);
           return null;
         }
 
-        fn createSyncStreamForDevice(ptr: ?*Api.c.OrtEp, dev: ?*const Api.c.OrtMemoryDevice, out: ?*?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          const stream = getSelf(ptr).createSyncStreamForDevice(apiCast(dev.?)) catch |err|
+        fn createSyncStreamForDevice(ptr: [*c]Api.c.OrtEp, dev: [*c]const Api.c.OrtMemoryDevice, out: [*c][*c]Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
+          const stream = getSelf(ptr).createSyncStreamForDevice(apiCastTo(dev.?, *const Allocator.MemoryDevice)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(stream);
           return null;
         }
 
-        fn getCompiledModelCompatibilityInfo(ptr: ?*Api.c.OrtEp, graph: ?*const Api.c.OrtGraph) callconv(.c) [*:0]const u8 {
-          return getSelf(ptr).getCompiledModelCompatibilityInfo(apiCast(graph.?));
+        fn getCompiledModelCompatibilityInfo(ptr: [*c]Api.c.OrtEp, graph: ?*const Api.c.OrtGraph) callconv(.c) [*:0]const u8 {
+          return getSelf(ptr).getCompiledModelCompatibilityInfo(apiCastTo(graph.?, *const Graph));
         }
       };
 
@@ -442,34 +471,37 @@ pub const Ep = struct {
     /// - (Optional) fn deinit(self: *Implementer) void
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
-        fn getSelf(self: ?*Api.c.OrtDataTransferImpl) *T {
-          return @fieldParentPtr("data_transfer", @as(@FieldType(T, "data_transfer"), @alignCast(apiCast(self))));
+        fn getSelf(self: [*c]const Api.c.OrtDataTransferImpl) *T {
+          return @constCast(@fieldParentPtr("data_transfer", apiCastTo(self.?, *const DataTransfer)));
         }
 
-        fn release(self: ?*Api.c.OrtDataTransferImpl) callconv(.c) void {
+        fn release(self: [*c]Api.c.OrtDataTransferImpl) callconv(.c) void {
           if (@hasDecl(T, "deinit")) getSelf(self).deinit();
         }
 
         fn canCopy(
-          self: ?*const Api.c.OrtDataTransferImpl,
+          self: [*c]const Api.c.OrtDataTransferImpl,
           src: ?*const Api.c.OrtMemoryDevice,
           dst: ?*const Api.c.OrtMemoryDevice,
         ) callconv(.c) bool {
-          return getSelf(self).canCopy(@as(*const Allocator.MemoryDevice, apiCast(src.?)), @as(*const Allocator.MemoryDevice, apiCast(dst.?)));
+          return getSelf(self).canCopy(apiCastTo(src.?, *const Allocator.MemoryDevice), apiCastTo(dst.?, *const Allocator.MemoryDevice));
         }
 
         fn copyTensors(
-          self: ?*Api.c.OrtDataTransferImpl,
+          self: [*c]Api.c.OrtDataTransferImpl,
           src: [*c]?*const Api.c.OrtValue,
           dst: [*c]?*Api.c.OrtValue,
           streams: [*c]?*Api.c.OrtSyncStream,
           num: usize,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const src_zig = @as([*]const *const Value, apiCast(src))[0..num];
-          const dst_zig = @as([*]*Value, apiCast(dst))[0..num];
-          const streams_zig: ?[]?*SyncStream = if (streams != null) @as([*]*SyncStream, apiCast(streams))[0..num] else null;
+          const src_slice_optional = apiCastTo(src, [*]?*const Value);
+          const dst_slice_optional = apiCastTo(dst, [*]?*Value);
 
-          getSelf(self).copyTensors(src_zig, dst_zig, streams_zig) catch |err| 
+          const src_slice = @as([*]const *const Value, @ptrCast(src_slice_optional))[0..num];
+          const dst_slice = @as([*]*Value, @ptrCast(dst_slice_optional))[0..num];
+          const streams_slice = apiCastTo(streams, [*]?*SyncStream)[0..num];
+
+          getSelf(self).copyTensors(src_slice, dst_slice, streams_slice) catch |err| 
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
@@ -536,27 +568,27 @@ pub const Ep = struct {
     /// - (Optional) fn deinit(self: *Implementer) void
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
-        fn getSelf(self: ?*Api.c.OrtSyncNotificationImpl) *T {
-          return @fieldParentPtr("sync_notification", @as(*SyncNotificationImpl, apiCast(self.?)));
+        fn getSelf(self: [*c]Api.c.OrtSyncNotificationImpl) *T {
+          return @constCast(@fieldParentPtr("sync_notification", apiCastTo(self.?, *SyncNotificationImpl)));
         }
 
-        fn release(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) void {
+        fn release(self: [*c]Api.c.OrtSyncNotificationImpl) callconv(.c) void {
           if (@hasDecl(T, "deinit")) getSelf(self).deinit();
         }
 
-        fn activate(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
+        fn activate(self: [*c]Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).activate() catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn waitOnDevice(self: ?*Api.c.OrtSyncNotificationImpl, stream: ?*Api.c.OrtSyncStream) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(self).waitOnDevice(@as(*SyncStream, apiCast(stream.?))) catch |err|
+        fn waitOnDevice(self: [*c]Api.c.OrtSyncNotificationImpl, stream: ?*Api.c.OrtSyncStream) callconv(.c) ?*Api.c.OrtStatus {
+          getSelf(self).waitOnDevice(@as(*SyncStream, apiCastTo(stream.?, *SyncStream))) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn waitOnHost(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
+        fn waitOnHost(self: [*c]Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).waitOnHost() catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
@@ -575,112 +607,172 @@ pub const Ep = struct {
     }
   };
 
-  /// Struct that an EP implements if it wishes to implement Stream support.
-  /// This struct provides the overrides for onnxruntime::Stream's virtual methods.
-  ///
-  /// since Version 1.23.
-  pub const SyncStreamImpl = struct {
-    pub const Underlying = Api.c.OrtSyncStreamImpl;
-    underlying: Underlying,
-    comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(Underlying)); }
-
-    ///Get the handle of the stream.
-    ///
-    /// This returns the native handle for the stream. e.g. cudaStream_t for CUDA streams.
-    ///
-    /// since Version 1.23.
-    pub fn handle(self: *@This()) ?*anyopaque {
-      return self.underlying.GetHandle.?(apiCast(self));
+  /// Used for synchronization and async execution / data transfer etc
+  pub const SyncStream = opaque {
+    pub const Underlying = Api.c.OrtSyncStream;
+    /// Wraps OrtApi::CreateSyncStreamForEpDevice
+    /// stream_options: Optional KeyValuePairs for stream configuration.
+    pub fn init(device: *const Ep.Device, stream_options: ?*const KeyValuePairs) !*@This() {
+      var retval: ?*@This() = null;
+      try Error.check(Api.ort.CreateSyncStreamForEpDevice.?(apiCast(device), apiCast(stream_options), apiCast(&retval)));
+      return retval orelse error.OutOfMemory;
     }
 
-    /// Create an OrtSyncNotificationImpl for the OrtSyncStreamImpl instance.
-    ///
-    /// since Version 1.23.
-    pub fn createNotification(self: *@This()) !*SyncNotificationImpl {
-      var out: ?*SyncNotificationImpl = null;
-      try Error.check(self.underlying.CreateNotification.?(apiCast(self), apiCast(&out)));
-      return out orelse error.OutOfMemory;
+    /// Wraps OrtApi::SyncStream_GetHandle
+    /// Returns the native handle
+    pub fn getHandle(self: *@This()) ?*anyopaque {
+      return Api.ort.SyncStream_GetHandle.?(apiCast(self));
     }
 
-    /// Notify the stream that a session run has ended.
-    ///
-    /// This is called by ORT to notify the stream that a session run has ended, allowing the stream to perform any
-    /// necessary cleanup or finalization.
-    ///
-    /// since Version 1.23.
-    pub fn endSessionRun(self: *@This()) !void {
-      try Error.check(self.underlying.OnSessionRunEnd.?(apiCast(self)));
-    }
-
-    /// Flush the stream.
-    ///
-    /// This is called by ORT to flush the stream, ensuring that all operations submitted to the stream are completed.
-    ///
-    /// since Version 1.23.
-    pub fn flush(self: *@This()) !void {
-      try Error.check(self.underlying.Flush.?(apiCast(self)));
-    }
-
-    /// Release the OrtSyncStreamImpl instance.
-    ///
-    /// This is called by ORT when the OrtSyncStreamImpl instance is no longer needed.
-    /// The implementation should release any resources held by the instance.
-    ///
-    /// since Version 1.23.
+    /// Wraps OrtApi::ReleaseSyncStream
     pub fn deinit(self: *@This()) void {
-      self.underlying.Release.?(apiCast(self));
+      Api.ort.ReleaseSyncStream.?(apiCast(self));
     }
 
-    /// Requirements for Implementer:
-    /// - Must have a field `sync_stream: SyncStreamImpl`.
-    /// - fn getHandle(self: *Implementer) ?*anyopaque
-    /// - fn createNotification(self: *Implementer, out: **SyncNotificationImpl) !void
-    /// - fn flush(self: *Implementer) !void
-    /// - fn onSessionRunEnd(self: *Implementer) !void
-    pub fn init(comptime T: type) @This() {
-      const VTable = struct {
-        fn getSelf(self: ?*Api.c.OrtSyncStreamImpl) *T {
-          return @fieldParentPtr("sync_stream", @as(*SyncStreamImpl, apiCast(self.?)));
-        }
-
-        fn release(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) void {
-          if (@hasDecl(T, "deinit")) getSelf(self).deinit();
-        }
-
-        fn getHandle(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*anyopaque {
-          return getSelf(self).getHandle();
-        }
-
-        fn createNotification(self: ?*Api.c.OrtSyncStreamImpl, out: ?*?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(self).createNotification(@as(*?*SyncNotificationImpl, apiCast(out.?))) catch |err|
-            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
-          return null;
-        }
-
-        fn flush(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(self).flush() catch |err|
-            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
-          return null;
-        }
-
-        fn onSessionRunEnd(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(self).onSessionRunEnd() catch |err|
-            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
-          return null;
-        }
-      };
-
-      return .{
-        .underlying = .{
-          .ort_version_supported = Api.c.ORT_API_VERSION,
-          .Release = VTable.release,
-          .GetHandle = VTable.getHandle,
-          .CreateNotification = VTable.createNotification,
-          .Flush = VTable.flush,
-          .OnSessionRunEnd = VTable.onSessionRunEnd,
-        },
-      };
+    /// Get the OrtSyncStreamImpl associated with an OrtSyncStream instance.
+    ///
+    /// This allows an the plugin library to connect its OrtSyncStreamImpl instance with an OrtSyncStream if needed.
+    ///
+    /// stream: The OrtSyncStream instance to find an OrtSyncStreamImpl for.
+    /// returns The associated OrtSyncStreamImpl if found. nullptr otherwise.
+    ///
+    /// since Version 1.23.
+    ///
+    /// Remarks: There should always be an OrtSyncStreamImpl associated with an OrtSyncStream instance that the EP gets.
+    pub fn getImpl(self: *const @This()) *const Impl {
+      return apiCastTo(Ep.api.underlying.SyncStream_GetImpl.?(apiCast(self)), *const Impl);
     }
+
+    /// Get the current sync ID for a stream.
+    ///
+    /// stream: The OrtSyncStream to get the sync ID for.
+    /// returns Current sync ID.
+    ///
+    /// since Version 1.23.
+    pub fn getSyncId(self: *const @This()) u64 {
+      return Ep.api.underlying.SyncStream_GetSyncId.?(apiCast(self));
+    }
+
+    /// Get the sync ID for the last time the consumer_stream waited on the producer_stream.
+    ///
+    /// When two streams are synchronized, the sync id represents the event used in that synchronization.
+    ///
+    /// producer_stream: The OrtSyncStream that produced the data.
+    /// consumer_stream: The OrtSyncStream that waited on the producer_stream.
+    /// returns ID for last sync. 0 if no sync has occurred between the two streams.
+    ///
+    /// since Version 1.23.
+    pub fn getSyncIdForLastWaitOnSyncStream(producer: *const @This(), consumer: *const @This()) u64 {
+      return Ep.api.underlying.GetSyncIdForLastWaitOnSyncStream.?(apiCast(producer), apiCast(consumer));
+    }
+
+    /// Struct that an EP implements if it wishes to implement Stream support.
+    /// This struct provides the overrides for onnxruntime::Stream's virtual methods.
+    ///
+    /// since Version 1.23.
+    pub const Impl = struct {
+      pub const Underlying = Api.c.OrtSyncStreamImpl;
+      underlying: @This().Underlying,
+      comptime { std.debug.assert(@bitSizeOf(@This()) == @bitSizeOf(@This().Underlying)); }
+
+      ///Get the handle of the stream.
+      ///
+      /// This returns the native handle for the stream. e.g. cudaStream_t for CUDA streams.
+      ///
+      /// since Version 1.23.
+      pub fn handle(self: *@This()) ?*anyopaque {
+        return self.underlying.GetHandle.?(apiCast(self));
+      }
+
+      /// Create an OrtSyncNotificationImpl for the OrtSyncStreamImpl instance.
+      ///
+      /// since Version 1.23.
+      pub fn createNotification(self: *@This()) !*SyncNotificationImpl {
+        var out: ?*SyncNotificationImpl = null;
+        try Error.check(self.underlying.CreateNotification.?(apiCast(self), apiCast(&out)));
+        return out orelse error.OutOfMemory;
+      }
+
+      /// Notify the stream that a session run has ended.
+      ///
+      /// This is called by ORT to notify the stream that a session run has ended, allowing the stream to perform any
+      /// necessary cleanup or finalization.
+      ///
+      /// since Version 1.23.
+      pub fn endSessionRun(self: *@This()) !void {
+        try Error.check(self.underlying.OnSessionRunEnd.?(apiCast(self)));
+      }
+
+      /// Flush the stream.
+      ///
+      /// This is called by ORT to flush the stream, ensuring that all operations submitted to the stream are completed.
+      ///
+      /// since Version 1.23.
+      pub fn flush(self: *@This()) !void {
+        try Error.check(self.underlying.Flush.?(apiCast(self)));
+      }
+
+      /// Release the OrtSyncStreamImpl instance.
+      ///
+      /// This is called by ORT when the OrtSyncStreamImpl instance is no longer needed.
+      /// The implementation should release any resources held by the instance.
+      ///
+      /// since Version 1.23.
+      pub fn deinit(self: *@This()) void {
+        self.underlying.Release.?(apiCast(self));
+      }
+
+      /// Requirements for Implementer:
+      /// - Must have a field `sync_stream: SyncStreamImpl`.
+      /// - fn getHandle(self: *Implementer) ?*anyopaque
+      /// - fn createNotification(self: *Implementer, out: **SyncNotificationImpl) !void
+      /// - fn flush(self: *Implementer) !void
+      /// - fn onSessionRunEnd(self: *Implementer) !void
+      pub fn init(comptime T: type) @This() {
+        const VTable = struct {
+          fn getSelf(self: [*c]Api.c.OrtSyncStreamImpl) *T {
+            return @constCast(@fieldParentPtr("sync_stream", apiCastTo(self.?, *Impl)));
+          }
+
+          fn release(self: [*c]Api.c.OrtSyncStreamImpl) callconv(.c) void {
+            if (@hasDecl(T, "deinit")) getSelf(self).deinit();
+          }
+
+          fn getHandle(self: [*c]Api.c.OrtSyncStreamImpl) callconv(.c) ?*anyopaque {
+            return getSelf(self).getHandle();
+          }
+
+          fn createNotification(self: [*c]Api.c.OrtSyncStreamImpl, out: [*c][*c]Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
+            getSelf(self).createNotification(@as(*?*SyncNotificationImpl, apiCastTo(out.?, *?*SyncNotificationImpl))) catch |err|
+              return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
+            return null;
+          }
+
+          fn flush(self: [*c]Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
+            getSelf(self).flush() catch |err|
+              return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
+            return null;
+          }
+
+          fn onSessionRunEnd(self: [*c]Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
+            getSelf(self).onSessionRunEnd() catch |err|
+              return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
+            return null;
+          }
+        };
+
+        return .{
+          .underlying = .{
+            .ort_version_supported = Api.c.ORT_API_VERSION,
+            .Release = VTable.release,
+            .GetHandle = VTable.getHandle,
+            .CreateNotification = VTable.createNotification,
+            .Flush = VTable.flush,
+            .OnSessionRunEnd = VTable.onSessionRunEnd,
+          },
+        };
+      }
+    };
   };
 
   pub const NodeFusionOptions = struct {
@@ -759,39 +851,39 @@ pub const Ep = struct {
       /// Requirements for Implementer:
       /// - Must have a field `compute_info: Ep.NodeCompute.Info`.
       /// - fn createState(self: *Implementer, context: *Context) !*State
-      /// - fn compute(self: *Implementer, state: *State, kernel_context: *KernelContext) !void
-      /// - fn releaseState(self: *Implementer, state: *State) void
+      /// - fn compute(self: *Implementer, state: ?*State, kernel_context: *KernelContext) !void
+      /// - fn releaseState(self: *Implementer, state: ?*State) void
       pub fn init(comptime T: type) @This() {
         const VTable = struct {
-          fn getSelf(self: ?*Api.c.OrtNodeComputeInfo) *T {
-            return @fieldParentPtr("compute_info", @as(*Info, apiCast(self.?)));
+          fn getSelf(self: [*c]Api.c.OrtNodeComputeInfo) *T {
+            return @fieldParentPtr("compute_info", apiCastTo(self.?, *Info));
           }
 
           fn createState(
-            self: ?*Api.c.OrtNodeComputeInfo,
+            self: [*c]Api.c.OrtNodeComputeInfo,
             ctx: ?*Api.c.OrtNodeComputeContext,
             state_out: ?*?*anyopaque,
           ) callconv(.c) ?*Api.c.OrtStatus {
-            const result = getSelf(self).createState(apiCast(ctx.?)) catch |err|
+            const result = getSelf(self).createState(apiCastTo(ctx.?, *Context)) catch |err|
               return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
             state_out.?.* = @ptrCast(result);
             return null;
           }
 
           fn compute(
-            self: ?*Api.c.OrtNodeComputeInfo,
+            self: [*c]Api.c.OrtNodeComputeInfo,
             state: ?*anyopaque,
             kernel_ctx: ?*Api.c.OrtKernelContext,
           ) callconv(.c) ?*Api.c.OrtStatus {
             // @ptrCast is needed because State has no underlying type
-            getSelf(self).compute(@ptrCast(state.?), apiCast(kernel_ctx.?)) catch |err|
+            getSelf(self).compute(@ptrCast(state), apiCastTo(kernel_ctx.?, *Op.KernelContext)) catch |err|
               return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
             return null;
           }
 
-          fn releaseState(self: ?*Api.c.OrtNodeComputeInfo, state: ?*anyopaque) callconv(.c) void {
+          fn releaseState(self: [*c]Api.c.OrtNodeComputeInfo, state: ?*anyopaque) callconv(.c) void {
             // @ptrCast is needed because State has no underlying type
-            getSelf(self).releaseState(@ptrCast(state.?));
+            getSelf(self).releaseState(@ptrCast(state));
           }
         };
 
@@ -984,8 +1076,8 @@ pub const Ep = struct {
     /// - fn getName(self: *const T) [*:0]const u8
     /// - fn getVendor(self: *const T) [*:0]const u8
     /// - fn getSupportedDevices(self: *T, devices: []const *const HardwareDevice, ep_devices_out: []*Ep.Device) !usize (return num added)
-    /// - fn createEp(self: *T, devices: []const *const HardwareDevice, metadata: []const *const KeyValuePairs, options: *const Session.Options.C, logger: *const KernelInfo.Logger) !*Ep
-    /// - fn releaseEp(self: *T, ep: *Ep) void
+    /// - fn createEp(self: *T, devices: []const *const HardwareDevice, metadata: []const *const KeyValuePairs, options: *const Session.Options.C, logger: *const KernelInfo.Logger) !*Ep.Interface
+    /// - fn releaseEp(self: *T, ep: *Ep.Interface) void
     /// - fn getVendorId(self: *const T) u32
     /// - fn getVersion(self: *const T) [*:0]const u8
     /// - fn validateCompiledModelCompatibilityInfo(self: *T, devices: []const *const HardwareDevice, info: [*:0]const u8) Api.c.OrtCompiledModelCompatibility
@@ -998,37 +1090,40 @@ pub const Ep = struct {
     /// - fn createSyncStreamForDevice(self: *T, device: *const Allocator.MemoryDevice, options: ?*const KeyValuePairs) !?*SyncStreamImpl
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
-        fn getSelf(ptr: ?*const Api.c.OrtEpFactory) *T {
-          return @fieldParentPtr("factory", @as(*Factory, @constCast(apiCast(ptr.?))));
+        fn getSelf(ptr: [*c]const Api.c.OrtEpFactory) *T {
+          return @fieldParentPtr("factory", @as(*Factory, @constCast(@ptrCast(ptr.?))));
         }
 
-        fn getName(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) [*c]const u8 {
+        fn getName(ptr: [*c]const Api.c.OrtEpFactory) callconv(.c) [*c]const u8 {
           return cStr(getSelf(ptr).getName());
         }
 
-        fn getVendor(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) [*c]const u8 {
+        fn getVendor(ptr: [*c]const Api.c.OrtEpFactory) callconv(.c) [*c]const u8 {
           return cStr(getSelf(ptr).getVendor());
         }
 
         fn getSupportedDevices(
-          ptr: ?*Api.c.OrtEpFactory,
+          ptr: [*c]Api.c.OrtEpFactory,
           devices: [*c]const ?*const Api.c.OrtHardwareDevice,
           num_devices: usize,
           ep_devices_out: [*c]?*Api.c.OrtEpDevice,
           max_ep_devices: usize,
           num_ep_devices_out: ?*usize,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const dev_slice = @as([*]const *const HardwareDevice, apiCast(devices))[0..num_devices];
-          const ep_out_slice = @as([*]*Ep.Device, apiCast(ep_devices_out))[0..max_ep_devices];
+          const d_slice_optional = apiCastTo(devices, [*]const ?*const HardwareDevice);
+          const e_slice_optional = apiCastTo(ep_devices_out, [*]?*Ep.Device);
 
-          const count = getSelf(ptr).getSupportedDevices(dev_slice, ep_out_slice) catch |err|
+          const d_slice = @as([*]const *const HardwareDevice, @ptrCast(d_slice_optional))[0..num_devices];
+          const e_slice = @as([*]*Ep.Device, @ptrCast(e_slice_optional))[0..max_ep_devices];
+
+          const count = getSelf(ptr).getSupportedDevices(d_slice, e_slice) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           num_ep_devices_out.?.* = count;
           return null;
         }
 
         fn createEp(
-          ptr: ?*Api.c.OrtEpFactory,
+          ptr: [*c]Api.c.OrtEpFactory,
           devices: [*c]const ?*const Api.c.OrtHardwareDevice,
           metadata: [*c]const ?*const Api.c.OrtKeyValuePairs,
           num_devices: usize,
@@ -1036,73 +1131,77 @@ pub const Ep = struct {
           logger: ?*const Api.c.OrtLogger,
           ep_out: ?*?*Api.c.OrtEp,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const dev_slice = @as([*]const *const HardwareDevice, apiCast(devices))[0..num_devices];
-          const meta_slice = @as([*]const *const KeyValuePairs, apiCast(metadata))[0..num_devices];
+          const d_slice_optional = apiCastTo(devices, [*]const ?*const HardwareDevice);
+          const m_slice_optional = apiCastTo(metadata, [*]const ?*const KeyValuePairs);
 
-          const ep = getSelf(ptr).createEp(dev_slice, meta_slice, apiCast(options.?), apiCast(logger.?)) catch |err|
+          const d_slice = @as([*]const *const HardwareDevice, @ptrCast(d_slice_optional))[0..num_devices];
+          const m_slice = @as([*]const *const KeyValuePairs, @ptrCast(m_slice_optional))[0..num_devices];
+
+          const ep = getSelf(ptr).createEp(d_slice, m_slice, apiCastTo(options.?, *const Session.Options.C), apiCastTo(logger.?, *const Op.KernelInfo.Logger)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           ep_out.?.* = apiCast(ep);
           return null;
         }
 
-        fn releaseEp(ptr: ?*Api.c.OrtEpFactory, ep: ?*Api.c.OrtEp) callconv(.c) void {
-          getSelf(ptr).releaseEp(apiCast(ep.?));
+        fn releaseEp(ptr: [*c]Api.c.OrtEpFactory, ep: [*c]Api.c.OrtEp) callconv(.c) void {
+          getSelf(ptr).releaseEp(apiCastTo(ep.?, *Ep.Interface));
         }
 
-        fn getVendorId(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) u32 {
+        fn getVendorId(ptr: [*c]const Api.c.OrtEpFactory) callconv(.c) u32 {
           return getSelf(ptr).getVendorId();
         }
 
-        fn getVersion(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) [*:0]const u8 {
+        fn getVersion(ptr: [*c]const Api.c.OrtEpFactory) callconv(.c) [*:0]const u8 {
           return getSelf(ptr).getVersion();
         }
 
         fn validateCompatibility(
-          ptr: ?*Api.c.OrtEpFactory,
+          ptr: [*c]Api.c.OrtEpFactory,
           devices: [*c]const ?*const Api.c.OrtHardwareDevice,
           num_devices: usize,
-          info: [*:0]const u8,
-          out: ?*Api.c.OrtCompiledModelCompatibility,
+          info: [*c]const u8,
+          out: [*c]Api.c.OrtCompiledModelCompatibility,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const dev_slice = @as([*]const *const HardwareDevice, apiCast(devices))[0..num_devices];
-          out.?.* = getSelf(ptr).validateCompiledModelCompatibilityInfo(dev_slice, info);
+          const d_slice_optional = apiCastTo(devices, [*]const ?*const HardwareDevice);
+          const d_slice = @as([*]const *const HardwareDevice, @ptrCast(d_slice_optional))[0..num_devices];
+          out.?.* = @intFromEnum(getSelf(ptr).validateCompiledModelCompatibilityInfo(d_slice, info));
           return null;
         }
 
         fn createAllocator(
-          ptr: ?*Api.c.OrtEpFactory,
+          ptr: [*c]Api.c.OrtEpFactory,
           info: ?*const Api.c.OrtMemoryInfo,
           opts: ?*const Api.c.OrtKeyValuePairs,
           out: ?*?*Api.c.OrtAllocator,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const alloc = getSelf(ptr).createAllocator(apiCast(info), apiCast(opts)) catch |err|
+          const alloc = getSelf(ptr).createAllocator(apiCastTo(info, ?*const Allocator.MemoryInfo), apiCastTo(opts, ?*const KeyValuePairs)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(alloc);
           return null;
         }
 
-        fn releaseAllocator(ptr: ?*Api.c.OrtEpFactory, alloc: ?*Api.c.OrtAllocator) callconv(.c) void {
-          getSelf(ptr).releaseAllocator(apiCast(alloc.?));
+        fn releaseAllocator(ptr: [*c]Api.c.OrtEpFactory, alloc: ?*Api.c.OrtAllocator) callconv(.c) void {
+          getSelf(ptr).releaseAllocator(apiCastTo(alloc.?, *Allocator));
         }
 
-        fn createDataTransfer(ptr: ?*Api.c.OrtEpFactory, out: ?*?*Api.c.OrtDataTransferImpl) callconv(.c) ?*Api.c.OrtStatus {
+        fn createDataTransfer(ptr: [*c]Api.c.OrtEpFactory, out: ?*?*Api.c.OrtDataTransferImpl) callconv(.c) ?*Api.c.OrtStatus {
           const dt = getSelf(ptr).createDataTransfer() catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(dt);
           return null;
         }
 
-        fn isStreamAware(ptr: ?*const Api.c.OrtEpFactory) callconv(.c) bool {
+        fn isStreamAware(ptr: [*c]const Api.c.OrtEpFactory) callconv(.c) bool {
           return getSelf(ptr).isStreamAware();
         }
 
         fn createSyncStream(
-          ptr: ?*Api.c.OrtEpFactory,
+          ptr: [*c]Api.c.OrtEpFactory,
           dev: ?*const Api.c.OrtMemoryDevice,
           opts: ?*const Api.c.OrtKeyValuePairs,
-          out: ?*?*Api.c.OrtSyncStreamImpl,
+          out: ?*[*c]Api.c.OrtSyncStreamImpl,
         ) callconv(.c) ?*Api.c.OrtStatus {
-          const stream = getSelf(ptr).createSyncStreamForDevice(apiCast(dev.?), apiCast(opts)) catch |err|
+          const stream = getSelf(ptr).createSyncStreamForDevice(apiCastTo(dev.?, *const Allocator.MemoryDevice), apiCastTo(opts, ?*const KeyValuePairs)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(stream);
           return null;
@@ -1819,7 +1918,7 @@ pub const Api = struct {
     /// Copy OrtValue instances containing Tensors between devices.
     /// src and dst must be the same length.
     /// stream: Optional SyncStream for async copy.
-    pub fn copyTensors(src: []const *const Value, dst: []const *Value, stream: ?*SyncStream) !void {
+    pub fn copyTensors(src: []const *const Value, dst: []const *Value, stream: ?*Ep.SyncStream) !void {
       std.debug.assert(src.len == dst.len);
       try Error.check(Api.ort.CopyTensors.?(underlying, apiCast(src.ptr), apiCast(dst.ptr), apiCast(stream), src.len));
     }
@@ -1915,6 +2014,8 @@ pub const Api = struct {
     log_level: Logging.Level,
     /// This must outlive `this` and any instances created by `this` OnnxInstanceCreator.
     log_id: [*:0]const u8,
+    /// The error logging function to use. This is called every time an error is occurs.
+    error_log_fn: @TypeOf(Logging.errorLogFn) = null,
     /// The custom logger with context. If this is null, the default logger is used.
     logging_interface: ?Logging.Interface = null,
     /// The threadpool used for initializing env, when null, default is used
@@ -1973,6 +2074,7 @@ pub const Api = struct {
   /// You MUST call this function before creating anything.
   /// You need to call `deinitApi` to free resources created by this function
   pub fn init(options: Options, comptime comptime_options: ComptimeOptions) !void {
+    Logging.errorLogFn = options.error_log_fn;
     base = Api.c.OrtGetApiBase();
     ort = base.GetApi.?(c.ORT_API_VERSION) orelse return error.ApiVersionMismatch;
     version_string = std.mem.sliceTo(cStrTo(base.GetVersionString.?(), ?[*:0] const u8) orelse @as([*:0] const u8, @ptrCast(&empty_string)), 0);
@@ -2118,6 +2220,8 @@ pub const Logging = struct {
       };
     }
   };
+
+  pub var errorLogFn: ?*const fn(*Error.Status) void = null;
 };
 
 /// Error handling things
@@ -2217,6 +2321,8 @@ pub const Error = struct {
         break :blk .{min, max};
       };
       defer status.deinit();
+
+      if (Logging.errorLogFn) |f| f(status);
       return switch (status.getErrorCode()) {
         inline min_error_code ... max_error_code => |ec| {
           // Weird .. weird .. weird
@@ -2272,66 +2378,6 @@ pub const KeyValuePairs = opaque {
   /// Wraps OrtApi::ReleaseKeyValuePairs
   pub fn deinit(self: *@This()) void {
     Api.ort.ReleaseKeyValuePairs.?(apiCast(self));
-  }
-};
-
-/// Used for synchronization and async execution / data transfer etc
-pub const SyncStream = opaque {
-  pub const Underlying = Api.c.OrtSyncStream;
-  /// Wraps OrtApi::CreateSyncStreamForEpDevice
-  /// stream_options: Optional KeyValuePairs for stream configuration.
-  pub fn init(device: *const Ep.Device, stream_options: ?*const KeyValuePairs) !*@This() {
-    var retval: ?*@This() = null;
-    try Error.check(Api.ort.CreateSyncStreamForEpDevice.?(apiCast(device), apiCast(stream_options), apiCast(&retval)));
-    return retval orelse error.OutOfMemory;
-  }
-
-  /// Wraps OrtApi::SyncStream_GetHandle
-  /// Returns the native handle
-  pub fn getHandle(self: *@This()) ?*anyopaque {
-    return Api.ort.SyncStream_GetHandle.?(apiCast(self));
-  }
-
-  /// Wraps OrtApi::ReleaseSyncStream
-  pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseSyncStream.?(apiCast(self));
-  }
-
-  /// Get the OrtSyncStreamImpl associated with an OrtSyncStream instance.
-  ///
-  /// This allows an the plugin library to connect its OrtSyncStreamImpl instance with an OrtSyncStream if needed.
-  ///
-  /// stream: The OrtSyncStream instance to find an OrtSyncStreamImpl for.
-  /// returns The associated OrtSyncStreamImpl if found. nullptr otherwise.
-  ///
-  /// since Version 1.23.
-  ///
-  /// Remarks: There should always be an OrtSyncStreamImpl associated with an OrtSyncStream instance that the EP gets.
-  pub fn getImpl(self: *const @This()) *const Ep.SyncStreamImpl {
-    return apiCastTo(Ep.api.underlying.SyncStream_GetImpl.?(apiCast(self)), *const Ep.SyncStreamImpl);
-  }
-
-  /// Get the current sync ID for a stream.
-  ///
-  /// stream: The OrtSyncStream to get the sync ID for.
-  /// returns Current sync ID.
-  ///
-  /// since Version 1.23.
-  pub fn getSyncId(self: *const @This()) u64 {
-    return Ep.api.underlying.SyncStream_GetSyncId.?(apiCast(self));
-  }
-
-  /// Get the sync ID for the last time the consumer_stream waited on the producer_stream.
-  ///
-  /// When two streams are synchronized, the sync id represents the event used in that synchronization.
-  ///
-  /// producer_stream: The OrtSyncStream that produced the data.
-  /// consumer_stream: The OrtSyncStream that waited on the producer_stream.
-  /// returns ID for last sync. 0 if no sync has occurred between the two streams.
-  ///
-  /// since Version 1.23.
-  pub fn getSyncIdForLastWaitOnSyncStream(producer: *const @This(), consumer: *const @This()) u64 {
-    return Ep.api.underlying.GetSyncIdForLastWaitOnSyncStream.?(apiCast(producer), apiCast(consumer));
   }
 };
 
@@ -2762,7 +2808,7 @@ pub const Allocator = struct {
   /// returns the pointer to an allocated block of `size` bytes
   ///
   /// Note: Implementation of this function is optional and AllocOnStream may be set to a nullptr.
-  pub fn allocOnStream(self: *@This(), size: usize, stream: *SyncStream) ?[]u8 {
+  pub fn allocOnStream(self: *@This(), size: usize, stream: *Ep.SyncStream) ?[]u8 {
     const ptr = (self.underlying.AllocOnStream orelse return self.alloc(size))(apiCast(self), size, apiCast(stream));
     return @as([*]u8, @ptrCast(ptr orelse return null))[0 .. size];
   }
@@ -3504,10 +3550,10 @@ pub const Value = opaque {
         BLOCK_SPARSE_INDICES = @intCast(Api.c.ORT_SPARSE_BLOCK_SPARSE_INDICES),
 
         pub fn Type(comptime self: @This()) type {
-          switch (self) {
+          return switch (self) {
             .COO_INDICES, .CSR_INNER_INDICES, .CSR_OUTER_INDICES => i64,
             .BLOCK_SPARSE_INDICES => i32,
-          }
+          };
         }
       };
 

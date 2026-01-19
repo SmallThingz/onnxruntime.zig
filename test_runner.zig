@@ -13,6 +13,11 @@ pub fn main() !void {
     .compiler = true,
     .ep = true,
     .training = true,
+    .error_log_fn = &struct {
+      fn log(status: *const onnx.Error.Status) void {
+        std.debug.print("Error code: {d}, message: {s}\n", .{ status.getErrorCode(), status.getErrorMessage() });
+      }
+    }.log,
   }, .{});
   
   var passed: usize = 0;
@@ -20,17 +25,16 @@ pub fn main() !void {
   var skipped: usize = 0;
 
   for (test_fns) |test_fn| {
-    std.debug.print("{s} => ", .{test_fn.name});
-    
     if (test_fn.func()) |_| {
-      std.debug.print("OK\n", .{});
+      std.debug.print("{s} => OK\n", .{test_fn.name});
       passed += 1;
     } else |err| {
       if (err == error.SkipZigTest) {
-        std.debug.print("SKIPPED\n", .{});
+        std.debug.print("{s} => SKIPPED\n", .{test_fn.name});
         skipped += 1;
       } else {
-        std.debug.print("FAILED ({s})\n", .{@errorName(err)});
+        std.debug.print("{s} => FAILED ({s})\n", .{test_fn.name, @errorName(err)});
+        std.debug.dumpStackTrace(@errorReturnTrace().?.*);
         failed += 1;
       }
     }
