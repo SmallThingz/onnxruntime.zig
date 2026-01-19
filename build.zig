@@ -6,20 +6,31 @@ pub fn build(b: *std.Build) !void {
 
   const mod = b.addModule("onnxruntime", .{
     .root_source_file = b.path("root.zig"),
+    .link_libc = true,
     .target = target,
     .optimize = optimize,
   });
 
-  addTestStep(b, mod, target, optimize) catch |err| {
-    std.log.warn("Failed to add test step, error: {}", .{err});
-  };
+  const include_paths = b.option([]const []const u8, "include_paths", "the paths to include for the onnxruntime module")
+    orelse &[_][]const u8{"/usr/include/", "/usr/include/onnxruntime/"};
+  for (include_paths) |path| mod.addIncludePath(.{ .cwd_relative = path });
+
+  const r_paths = b.option([]const []const u8, "r_paths", "the paths to add to the rpath for the onnxruntime module")
+    orelse &[_][]const u8{"/usr/lib/"};
+  for (r_paths) |path| mod.addRPath(.{ .cwd_relative = path });
+
+  mod.linkSystemLibrary("onnxruntime", .{});
+
+  addTestStep(b, mod, target, optimize) catch {}; // |err| std.log.warn("Failed to add test step, error: {}", .{err});
 }
 
 fn addTestStep(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) !void {
   const test_step = b.step("test", "Run tests");
   const test_dir_name = "tests";
+
   var test_dir = try std.fs.cwd().openDir(test_dir_name, .{ .access_sub_paths = true, .iterate = true });
   defer test_dir.close();
+
   var it = test_dir.iterate();
   while (try it.next()) |entry| {
     const tests = b.addTest(.{
@@ -28,17 +39,9 @@ fn addTestStep(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
         .target = target,
         .optimize = optimize,
       }),
-      // .test_runner = .{
-      //   .path = b.path("tests/test_runner.zig"),
-      //   .mode = .simple,
-      // }, 
     });
 
     tests.root_module.addImport("onnxruntime", mod);
-    tests.linkLibC();
-    tests.addIncludePath(.{ .cwd_relative = "/usr/include/onnxruntime" });
-    tests.linkSystemLibrary("onnxruntime");
-    tests.addRPath(.{ .cwd_relative = "/usr/lib" });
     const run_tests = b.addRunArtifact(tests);
     test_step.dependOn(&run_tests.step);
   }

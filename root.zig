@@ -1677,7 +1677,7 @@ pub const Training = struct {
 /// The main api struct
 pub const Api = struct {
   /// API docs: https://onnxruntime.ai/docs/api/c/struct_Api.ort.html
-  pub const c = @cImport({ @cInclude("onnxruntime/onnxruntime_training_c_api.h"); });
+  pub const c = @cImport({ @cInclude("onnxruntime_training_c_api.h"); });
 
   pub var base: *const Api.c.OrtApiBase = undefined;
   /// a pointer to a static api struct
