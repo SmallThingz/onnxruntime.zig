@@ -116,28 +116,6 @@ pub const Utils = struct {
     return @ptrCast(anyptr);
   }
 
-  // fn ApiCastTo(T: type, To: type) type {
-  //   return switch (@typeInfo(T)) {
-  //     .@"opaque", .@"struct",  => blk: {
-  //       std.debug.assert(T == To.Underlying);
-  //       break :blk To.Underlying;
-  //     },
-  //     .@"enum" => blk: {
-  //       std.debug.assert(T == @typeInfo(To).@"enum".tag_type);
-  //       break :blk @typeInfo(To).@"enum".tag_type;
-  //     },
-  //     .pointer => |pi| switch (@typeInfo(To)) {
-  //       .pointer => |topi| CopyPointerAttrs(T, topi.size, ApiCastTo(pi.child, topi.child)),
-  //       .optional => |tooi| ?blk: {
-  //         const topi = @typeInfo(tooi.child);
-  //         break :blk CopyPointerAttrs(T, topi.size, ApiCastTo(pi.child, topi.child));
-  //       },
-  //       else => unreachable,
-  //     },
-  //     else => unreachable,
-  //   };
-  // }
-
   fn ApiCastTo(From: type, To: type) type {
     std.debug.assert(ApiCast(To) == From);
     return To;
@@ -588,8 +566,8 @@ pub const Ep = struct {
     /// This returns the native handle for the stream. e.g. cudaStream_t for CUDA streams.
     ///
     /// since Version 1.23.
-    pub fn handle(self: *@This()) *anyopaque {
-      return self.underlying.GetHandle.?(apiCast(self)).?;
+    pub fn handle(self: *@This()) ?*anyopaque {
+      return self.underlying.GetHandle.?(apiCast(self));
     }
 
     /// Create an OrtSyncNotificationImpl for the OrtSyncStreamImpl instance.
@@ -1686,7 +1664,7 @@ pub const Api = struct {
   /// This is here because the Api.env instance is global so no point making it non_static
   /// The Env holds the logging state used by all other objects.
   pub const env = opaque {
-    var underlying: *c.OrtEnv = undefined;
+    pub var underlying: *c.OrtEnv = undefined;
 
     /// Wraps OrtApi::CreateEnv, OrtApi::CreateEnvWithGlobalThreadPools, OrtApi::CreateEnvWithCustomLogger and OrtApi::CreateEnvWithCustomLoggerAndGlobalThreadPools
     /// The correct function is called depending on the provided options
@@ -1829,7 +1807,7 @@ pub const Api = struct {
 
   /// The model editor api
   pub const editor = opaque {
-    var underlying: *const c.OrtModelEditorApi = undefined;
+    pub var underlying: *const c.OrtModelEditorApi = undefined;
 
     /// Create an OrtValueInfo for use as an OrtGraph input or output.
     pub fn createValueInfo(name: [*:0]const u8, type_info: *const TypeInfo) !*Value.Info {
@@ -1886,7 +1864,7 @@ pub const Api = struct {
 
   /// The compiler api
   pub const compiler = opaque {
-    var underlying: *const c.OrtCompileApi = undefined;
+    pub var underlying: *const c.OrtCompileApi = undefined;
 
     /// Translated from OrtApi::OrtCompileApiFlags
     pub const Flags = packed struct {
@@ -2848,7 +2826,7 @@ pub const TypeInfo = opaque {
   pub fn toTensorTypeAndShapeInfo(self: *const @This()) !?*const TensorTypeAndShapeInfo.C {
     var out: ?*const TensorTypeAndShapeInfo.C = null;
     try Error.check(Api.ort.CastTypeInfoToTensorInfo.?(apiCast(self), apiCast(&out)));
-    return out orelse error.OutOfMemory;
+    return out;
   }
 
   /// Get ::TypeInfo.Type from ::OrtTypeInfo
@@ -2910,7 +2888,7 @@ pub const ThreadingOptions = struct {
   /// Know more about denormalized floats here: https://en.wikipedia.org/wiki/IEEE_754-1985#Denormalized_numbers
   denormals_as_zero: bool = false,
   /// Set custom thread creation function for global thread pools
-  custom_thread_creation_interface: ?ThreadCreationInterface = null,
+  custom_thread_creation_interface: ?ThreadingInterface = null,
   /// Custom function for joining threads
   custom_thread_join_function: ?*const fn(*const Api.c.OrtCustomHandleType) callconv(.c) void = null,
   /// Set affinities for intra op threads
@@ -2932,11 +2910,14 @@ pub const ThreadingOptions = struct {
   /// since Version 1.14
   intraop_thread_affinity: ?[*:0]const u8 = null,
 
-  const ThreadCreationInterface = struct {
+  const ThreadingInterface = struct {
     ptr: ?*anyopaque,
     create_fn: Api.c.OrtCustomCreateThreadFn,
+    join_fn: Api.c.OrtCustomJoinThreadFn,
 
-    /// the instances must have a `pub fn create(self: *Self, worker: *const fn(?*anyopaque), arg: ?*anyopaque) *anytype`
+    /// the instances must have
+    ///   - `pub fn create(self: *Self, worker: *const fn(?*anyopaque), arg: ?*anyopaque) ?*anyopaque`
+    ///   - `pub fn join(self: *Self, handle: *anyopaque) void` interface
     /// interface can be a pointer to a non-0 sized struct or an instance of 0 sized struct
     pub fn fromContext(instance: anytype) @This() {
       const T = @TypeOf(instance);
@@ -2946,9 +2927,15 @@ pub const ThreadingOptions = struct {
         .create_fn = &struct {
           pub fn create(ctx: ?*anyopaque, worker: ?*const fn(?*anyopaque) callconv(.c) void, arg: ?*anyopaque) callconv(.c) Api.c.OrtCustomThreadHandle {
             const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
-            return apiCast(original.create(worker, arg));
+            return @ptrCast(original.create(worker, arg));
           }
         }.create,
+        .join_fn = &struct {
+          pub fn join(ctx: ?*anyopaque, handle: Api.c.OrtCustomThreadHandle) callconv(.c) void {
+            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
+            original.join(@ptrCast(handle));
+          }
+        }.join,
       };
     }
   };
@@ -2982,13 +2969,10 @@ pub const ThreadingOptions = struct {
       try Error.check(Api.ort.SetGlobalDenormalAsZero.?(apiCast(self)));
     }
 
-    pub fn customThreadCreationInterface(self: *@This(), interface: ThreadCreationInterface) !void {
+    pub fn customThreadingInterface(self: *@This(), interface: ThreadingInterface) !void {
       try Error.check(Api.ort.SetGlobalCustomCreateThreadFn.?(apiCast(self), interface.create_fn));
       if (interface.ptr) |p| try Error.check(Api.ort.SetGlobalCustomThreadCreationOptions.?(apiCast(self), p));
-    }
-
-    pub fn customThreadJoinFunction(self: *@This(), f: *const fn(*const Api.c.OrtCustomHandleType) callconv(.c) void) !void {
-      try Error.check(Api.ort.SetGlobalCustomJoinThreadFn.?(apiCast(self), @ptrCast(f)));
+      try Error.check(Api.ort.SetGlobalCustomJoinThreadFn.?(apiCast(self), interface.join_fn));
     }
 
     pub fn intraOpThreadAffinity(self: *@This(), affinity_string: [*:0]const u8) !void {
@@ -3008,8 +2992,7 @@ pub const ThreadingOptions = struct {
     if (self.interop_threads != 0) try retval.interOpNumThreads(self.interop_threads);
     if (self.allow_spinning) |spinning| try retval.spinControl(spinning);
     if (self.denormals_as_zero) try retval.denormalAsZero();
-    if (self.custom_thread_creation_interface) |iface| try retval.customThreadCreationInterface(iface);
-    if (self.custom_thread_join_function) |f| try retval.customThreadJoinFunction(f);
+    if (self.custom_thread_creation_interface) |iface| try retval.customThreadingInterface(iface);
     if (self.intraop_thread_affinity) |str| try retval.intraOpThreadAffinity(str);
     return retval;
   }
@@ -3552,18 +3535,24 @@ pub const Value = opaque {
 
       /// Use user-supplied COO indices.
       /// indices: User buffer. Must outlive Value.
-      pub fn useCooIndices(self: *@This(), indices: []i64) !void {
-        try Error.check(Api.ort.UseCooIndices.?(apiCast(self), indices.ptr, indices.len));
+      ///
+      /// if indices_data == null, a fully sparse tensor is created.
+      pub fn useCooIndices(self: *@This(), indices_data: ?[*]i64, indices_data_len: usize) !void {
+        try Error.check(Api.ort.UseCooIndices.?(apiCast(self), indices_data, indices_data_len));
       }
 
       /// Use user-supplied CSR indices.
-      pub fn useCsrIndices(self: *@This(), inner: []i64, outer: []i64) !void {
-        try Error.check(Api.ort.UseCsrIndices.?(apiCast(self), inner.ptr, inner.len, outer.ptr, outer.len));
+      /// if inner_data == null, a fully sparse tensor is created.
+      /// if outer_data == null, a fully sparse tensor is created.
+      pub fn useCsrIndices(self: *@This(), inner_data: ?[*]i64, inner_data_len: usize, outer_data: ?[*]i64, outer_data_len: usize) !void {
+        try Error.check(Api.ort.UseCsrIndices.?(apiCast(self), inner_data, inner_data_len, outer_data, outer_data_len));
       }
 
       /// Use user-supplied Block Sparse indices.
-      pub fn useBlockSparseIndices(self: *@This(), indices_shape: []const i64, indices: []i32) !void {
-        try Error.check(Api.ort.UseBlockSparseIndices.?(apiCast(self), indices_shape.ptr, indices_shape.len, indices.ptr));
+      ///
+      /// if indices_data == null, a fully sparse tensor is created.
+      pub fn useBlockSparseIndices(self: *@This(), indices_shape: []const i64, indices_data: ?[*]i32) !void {
+        try Error.check(Api.ort.UseBlockSparseIndices.?(apiCast(self), indices_shape.ptr, indices_shape.len, indices_data));
       }
 
       /// Get the sparse format of the value.
@@ -4261,7 +4250,18 @@ pub const Model = opaque {
     /// Returns a slice of null-terminated strings.
     /// Note: The returned keys slice pointer AND the individual string pointers 
     /// must be freed using `allocator`.
-    pub fn getCustomMetadataMapKeys(self: *const @This(), allocator: *Allocator) !?[][*:0]u8 {
+    pub fn getCustomMetadataMapKeys(self: *const @This(), allocator: *Allocator) !struct {
+      keys: ?[][*:0]u8,
+
+      pub fn deinit(self_: *@This(), allocator_: *Allocator) void {
+        if (self_.keys) |keys| {
+          for (keys) |key| {
+            allocator_.free(key);
+          }
+          allocator_.free(keys);
+        }
+      }
+    } {
       var keys_ptr: ?[*][*:0]u8 = null;
       var num_keys: i64 = 0;
       
@@ -4272,7 +4272,7 @@ pub const Model = opaque {
         &num_keys
       ));
 
-      return if (keys_ptr) |ptr| ptr[0..@intCast(num_keys)] else null;
+      return .{ .keys = if (keys_ptr) |ptr| ptr[0..@intCast(num_keys)] else null };
     }
 
     /// Release an ::OrtModelMetadata.
@@ -4324,21 +4324,25 @@ pub const Model = opaque {
       ));
     }
 
+    pub const ModelOutputBuffer = struct {
+      ptr: ?*anyopaque = null,
+      len: usize = 0,
+    };
+
     /// Configures model compilation to store the output compiled ONNX model in a buffer.
     ///
     /// allocator: The allocator used to allocate the buffer.
     /// Returns a slice to the allocated buffer. The memory is owned by the allocator/caller 
     /// context but specifically allocated here.
-    pub fn setOutputModelBuffer(self: *@This(), allocator: *Allocator) ![]u8 {
-      var ptr: ?*anyopaque = null;
-      var len: usize = 0;
+    ///
+    /// WARNING: the `out` struct must be pinned in memory until Model.compile is called. They are populated during that call automatically
+    pub fn setOutputModelBuffer(self: *@This(), allocator: *Allocator, out: *ModelOutputBuffer) !void {
       try Error.check(Api.compiler.underlying.ModelCompilationOptions_SetOutputModelBuffer.?(
         apiCast(self),
         apiCast(allocator),
-        @ptrCast(&ptr), // cast to anyopaque c pointer which has no `Underlying`
-        &len
+        @ptrCast(&out.ptr), // cast to anyopaque c pointer which has no `Underlying`
+        &out.len
       ));
-      return @as([*]u8, @ptrCast(ptr orelse return &.{}))[0..len];
     }
 
     /// Enables or disables the embedding of EPContext binary data.
@@ -4630,10 +4634,11 @@ pub const Session = opaque {
         try Error.check(Api.ort.GetSessionConfigEntry.?(apiCast(self), cStr(key), cStr(out_ptr), out_len));
       }
 
+      /// The returned size does NOT include the null terminator.
       pub fn getConfigEntryCount(self: *const C, key: [*:0]const u8) usize {
         var out: usize = 0;
         self._getConfigEntry(key, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
-        return out - 1;
+        return if (out > 0) out - 1 else 0;
       }
 
       /// Get a session configuration value.
@@ -4826,19 +4831,11 @@ pub const Session = opaque {
         try Error.check(Api.ort.SessionOptionsSetEpSelectionPolicyDelegate.?(apiCast(self), delegate, state));
       }
 
-      /// Set custom thread creation function.
-      pub fn setCustomCreateThreadFn(self: *@This(), create_fn: Api.c.OrtCustomCreateThreadFn) !void {
-        try Error.check(Api.ort.SessionOptionsSetCustomCreateThreadFn.?(apiCast(self), create_fn));
-      }
-
-      /// Set creation options for custom thread.
-      pub fn setCustomThreadCreationOptions(self: *@This(), options_ptr: ?*anyopaque) !void {
-        try Error.check(Api.ort.SessionOptionsSetCustomThreadCreationOptions.?(apiCast(self), options_ptr));
-      }
-
-      /// Set custom thread join function.
-      pub fn setCustomJoinThreadFn(self: *@This(), join_fn: Api.c.OrtCustomJoinThreadFn) !void {
-        try Error.check(Api.ort.SessionOptionsSetCustomJoinThreadFn.?(apiCast(self), join_fn));
+      /// Set custom thread creation and join functions.
+      pub fn customThreadingInterface(self: *@This(), interface: ThreadingOptions.ThreadingInterface) !void {
+        try Error.check(Api.ort.SessionOptionsSetCustomCreateThreadFn.?(apiCast(self), interface.create_fn));
+        if (interface.ptr) |p| try Error.check(Api.ort.SessionOptionsSetCustomThreadCreationOptions.?(apiCast(self), p));
+        try Error.check(Api.ort.SessionOptionsSetCustomJoinThreadFn.?(apiCast(self), interface.join_fn));
       }
 
       /// Sets load cancellation flag to abort session loading process.
@@ -5214,8 +5211,8 @@ pub const RunOptions = opaque {
     pub const Underlying = Api.c.OrtLoraAdapter;
     /// Wraps OrtApi::CreateLoraAdapter
     /// adapter_path: Path to the LoRA adapter file.
-    /// allocator: Optional allocator. If null, data stays on CPU until inference requires it on device.
-    pub fn init(adapter_path: Utils.Path, allocator: *Allocator) !*@This() {
+    /// allocator: Optional allocator. If null, data stays on CPU until inference requires it on device (after which it is copied).
+    pub fn init(adapter_path: Utils.Path, allocator: ?*Allocator) !*@This() {
       var self: ?*@This() = null;
       try Error.check(Api.ort.CreateLoraAdapter.?(pathCast(adapter_path), apiCast(allocator), apiCast(&self)));
       return self orelse error.OutOfMemory;
@@ -5223,7 +5220,8 @@ pub const RunOptions = opaque {
 
     /// Wraps OrtApi::CreateLoraAdapterFromArray
     /// bytes: In-memory buffer of the LoRA adapter.
-    pub fn initFromArray(bytes: []const u8, allocator: *Allocator) !*@This() {
+    /// allocator: Optional allocator. If null, data stays on CPU until inference requires it on device (after which it is copied).
+    pub fn initFromArray(bytes: []const u8, allocator: ?*Allocator) !*@This() {
       var self: ?*@This() = null;
       try Error.check(Api.ort.CreateLoraAdapterFromArray.?(bytes.ptr, bytes.len, apiCast(allocator), apiCast(&self)));
       return self orelse error.OutOfMemory;
@@ -5272,6 +5270,7 @@ pub const IoBinding = opaque {
     try Error.check(Api.ort.BindOutputToDevice.?(apiCast(self), cStr(name), apiCast(mem_info)));
   }
 
+  /// Returns error.Unbounded if `self` has no bound outputs
   pub fn getBoundOutputNames(self: *const @This(), allocator: *Allocator) !struct {
     names: [*]u8,
     lengths: []usize,
@@ -5344,10 +5343,11 @@ pub const KernelContext = opaque {
     return out;
   }
 
-  pub fn getOutput(self: *@This(), index: usize, dims: []const i64) !*Value {
+  /// DO NOT FREE THE RETURNED VALUE
+  pub fn getOutput(self: *@This(), index: usize, dims: []const i64) !?*Value {
     var out: ?*Value = null;
     try Error.check(Api.ort.KernelContext_GetOutput.?(apiCast(self), index, dims.ptr, dims.len, apiCast(&out)));
-    return out orelse error.OutOfMemory;
+    return out;
   }
 
   pub fn getGpuComputeStream(self: *const @This()) !?*anyopaque {
@@ -5405,10 +5405,11 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfo_GetNodeName.?(apiCast(self), cStr(out_ptr), out_size));
   }
 
+  /// The returned size does NOT include the null terminator.
   pub fn getNodeNameCount(self: *const @This()) !usize {
     var out: usize = 0;
     self._getNodeName(@ptrCast(@constCast(&[_]u8{0})), &out) catch {};
-    return out - 1;
+    return if (out > 0) out - 1 else 0;
   }
 
   pub fn getNodeName(self: *const @This(), out: [:0]u8) !void {
@@ -5433,10 +5434,11 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfoGetAttribute_string.?(apiCast(self), cStr(name), cStr(out_ptr), out_len));
   }
 
+  /// The returned size does NOT include the null terminator.
   pub fn getAttributeStringCount(self: *const @This(), name: [*:0]const u8) usize {
     var out: usize = 0;
     self._getAttributeString(name, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
-    return out - 1;
+    return if (out > 0) out - 1 else 0;
   }
 
   pub fn getAttributeString(self: *const @This(), name: [*:0]const u8, out: [:0]u8) !void {
@@ -5469,10 +5471,11 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfo_GetInputName.?(apiCast(self), index, cStr(out_ptr), out_len));
   }
 
+  /// The returned size does NOT include the null terminator.
   pub fn getInputNameCount(self: *const @This(), index: usize) !usize {
     var out: usize = 0;
     self._getInputName(index, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
-    return out - 1;
+    return if (out > 0) out - 1 else 0;
   }
 
   /// Get the name of an input.
@@ -5488,10 +5491,11 @@ pub const KernelInfo = opaque {
     try Error.check(Api.ort.KernelInfo_GetOutputName.?(apiCast(self), index, cStr(out_ptr), out_len));
   }
 
+  /// The returned size does NOT include the null terminator.
   pub fn getOutputNameCount(self: *const @This(), index: usize) !usize {
     var out: usize = 0;
     self._getOutputName(index, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
-    return out - 1;
+    return if (out > 0) out - 1 else 0;
   }
 
   /// Get the name of an output.
