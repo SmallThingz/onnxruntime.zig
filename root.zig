@@ -1369,7 +1369,7 @@ pub const Training = struct {
         apiCast(checkpoint),
         cCast(train_model_data.ptr),
         train_model_data.len,
-        cCast(eval_model_data.ptr),
+        cCast(if (eval_model_data.len > 0) eval_model_data.ptr else null),
         eval_model_data.len,
         cCast(optimizer_model_data.ptr),
         optimizer_model_data.len,
@@ -3847,7 +3847,6 @@ pub const Node = opaque {
   }
 
   /// Returns the node's inputs as ValueInfo instances.
-  /// The returned slice is allocated using the provided allocator.
   pub fn getInputs(self: *const @This(), out: []*const Value.Info) !void {
     const out_ptr: [*]?*const Value.Info = @ptrCast(out.ptr);
     try Error.check(Api.ort.Node_GetInputs.?(apiCast(self), apiCast(out_ptr), out.len));
@@ -3861,7 +3860,6 @@ pub const Node = opaque {
   }
 
   /// Returns the node's outputs as ValueInfo instances.
-  /// The returned slice is allocated using the provided allocator.
   pub fn getOutputs(self: *const @This(), out: []?*const Value.Info) !void {
     try Error.check(Api.ort.Node_GetOutputs.?(apiCast(self), apiCast(out.ptr), out.len));
   }
@@ -3874,7 +3872,6 @@ pub const Node = opaque {
   }
 
   /// Get the implicit inputs, as ValueInfo instances, that are used within the given node's subgraphs.
-  /// The returned slice is allocated using the provided gpa.
   pub fn getImplicitInputs(self: *const @This(), out: []*const Value.Info) !void {
     // we need to use @ptrCast here because the api tales optional pointers but never sets to null
     const out_ptr: [*]?*const Value.Info = @ptrCast(out.ptr);
@@ -3889,7 +3886,6 @@ pub const Node = opaque {
   }
 
   /// Returns a node's attributes as Op.Attr instances.
-  /// The returned slice is allocated using the provided gpa.
   pub fn getAttributes(self: *const @This(), out: []*const Op.Attr) !void {
     // we need to use @ptrCast here because the api tales optional pointers but never sets to null
     const out_ptr: [*]?*const Op.Attr = @ptrCast(out.ptr);
@@ -3925,7 +3921,6 @@ pub const Node = opaque {
 
   /// Get the subgraphs, as Graph instances, contained by the given node.
   /// Also returns the attribute name associated with each subgraph.
-  /// The returned slice is allocated using the provided allocator.
   pub fn getSubgraphs(self: *const @This(), out_graph: []*const Graph, out_attribute_name: []?[*:0]const u8) !void {
     std.debug.assert(out_graph.len == out_attribute_name.len);
     const out_graph_ptr: [*]?*const Graph = @ptrCast(out_graph.ptr);
@@ -4051,7 +4046,6 @@ pub const Graph = opaque {
   };
 
   /// Returns the operator sets that the graph's model uses.
-  /// The returned slice is allocated using the provided gpa.
   pub fn getOperatorSets(self: *const @This(), out_domains: [][*:0]const u8, out_versions: []i64) !void {
     std.debug.assert(out_domains.len == out_versions.len);
     try Error.check(Api.ort.Graph_GetOperatorSets.?(
@@ -4070,7 +4064,6 @@ pub const Graph = opaque {
   }
 
   /// Returns the graph's inputs as Value.Info instances.
-  /// The returned slice is allocated using the provided gpa.
   pub fn getInputs(self: *const @This(), out: []*const Value.Info) !void {
     const out_ptr: [*]?*const Value.Info = @ptrCast(out.ptr);
     try Error.check(Api.ort.Graph_GetInputs.?(apiCast(self), apiCast(out_ptr), out.len));
@@ -4084,7 +4077,6 @@ pub const Graph = opaque {
   }
 
   /// Returns the graph's outputs as Value.Info instances.
-  /// The returned slice is allocated using the provided gpa.
   pub fn getOutputs(self: *const @This(), out: []*const Value.Info) !void {
     const out_ptr: [*]?*const Value.Info = @ptrCast(out.ptr);
     try Error.check(Api.ort.Graph_GetOutputs.?(apiCast(self), apiCast(out_ptr), out.len));
@@ -4099,7 +4091,6 @@ pub const Graph = opaque {
 
   /// Returns the graph's initializers as Value.Info instances.
   /// To get the actual data, call `Value.Info.getInitializerValue`.
-  /// The returned slice is allocated using the provided gpa.
   pub fn getInitializers(self: *const @This(), out: []*const Value.Info) !void {
     const out_ptr: [*]?*const Value.Info = @ptrCast(out.ptr);
     try Error.check(Api.ort.Graph_GetInitializers.?(apiCast(self), apiCast(out_ptr), out.len));
@@ -4113,7 +4104,8 @@ pub const Graph = opaque {
   }
 
   /// Returns the graph's nodes as Node instances.
-  /// The returned slice is allocated using the provided gpa.
+  ///
+  /// NOTE: The C API doesn't return the count, so you MUST ensure the slice is exactly the size of Graph_GetNumNodes.
   pub fn getNodes(self: *const @This(), out: []*const Node) !void {
     const out_ptr: [*]?*const Node = @ptrCast(out.ptr);
     try Error.check(Api.ort.Graph_GetNodes.?(apiCast(self), apiCast(out_ptr), out.len));
@@ -5137,6 +5129,8 @@ pub const Session = opaque {
 
   /// Run the model asynchronously
   /// callback_ctx has a function `callback(ctx: *@TypeOf(callback_ctx), []?*Value, *Error.Status)`
+  ///
+  /// WARNING: the `callback_ctx_ptr` should be static or pinned in memory until the end of the program.
   pub fn runAsync(
     self: *@This(),
     run_options: ?*const RunOptions,
