@@ -240,6 +240,14 @@ pub const Utils = struct {
 
   pub const empty_string = [_]u8{0};
   pub const empty_path = [_]PathChar{0};
+
+  pub fn asPath(comptime str: []const u8) [:0]const PathChar {
+    var retval: [str.len:0]PathChar = undefined;
+    for (str, 0..) |c, i| retval[i] = c;
+    retval[str.len] = 0;
+    const const_retval = retval;
+    return &const_retval;
+  }
 };
 
 const apiCast = Utils.apiCast;
@@ -2744,17 +2752,36 @@ pub const Allocator = struct {
     return self.underlying.version;
   }
 
-  /// Allocates a block of memory ofthe specified size.
-  /// size: Size in bytes.
-  /// returns the pointer to the allocated block. null is size = 0 or allocation failed
-  pub fn alloc(self: *@This(), size: usize) ?[]u8 {
+  pub fn _alloc(self: *@This(), size: usize) ?[]u8 {
+    std.debug.assert(size != 0);
     return @as([*]u8, @ptrCast(self.underlying.Alloc.?(apiCast(self), size) orelse return null))[0 .. size];
+  }
+
+  /// Allocates a block of memory ofthe specified size.
+  /// size: Size in bytes. asserts size is not 0.
+  /// returns the pointer to the allocated block.
+  pub fn alloc(self: *@This(), comptime T: type, size: usize) ![]T {
+    std.debug.assert(@alignOf(T) <= 16);
+    std.debug.assert(size != 0);
+    const mem = self._alloc(@sizeOf(T) * size) orelse return error.OutOfMemory;
+    return @as([*]T, @alignCast(@ptrCast(mem.ptr)))[0 .. size];
+  }
+
+  pub fn _free(self: *@This(), p: ?[*]u8) void {
+    self.underlying.Free.?(apiCast(self), @ptrCast(p));
   }
 
   /// Frees a block of memory previously allocated with this allocator.
   /// p: Pointer to the memory block.
-  pub fn free(self: *@This(), p: ?[*]u8) void {
-    self.underlying.Free.?(apiCast(self), @ptrCast(p));
+  pub fn free(self: *@This(), ptr: anytype) void {
+    switch (@typeInfo(@TypeOf(ptr))) {
+      .optional => if (ptr) |v| self.free(v),
+      .pointer => |pi| switch (pi.size) {
+        .one, .c, .many => self._free(@ptrCast(ptr)),
+        .slice => self._free(@ptrCast(ptr.ptr)),
+      },
+      else => unreachable,
+    }
   }
 
   /// Return a pointer to an ::OrtMemoryInfo that describes this allocator
@@ -2766,10 +2793,11 @@ pub const Allocator = struct {
   /// Use this function if you want to separate allocations made by ORT during Run() calls from
   /// those made during session initialization. This allows for separate memory management strategies for these
   /// allocations.
-  /// size: Size in bytes.
-  /// returns the pointer to an allocated block of `size` bytes. null if size was 0 or allocation failed.
-  pub fn reserve(self: *@This(), size: usize) ?[]u8 {
-    return @as([*]u8, @ptrCast((self.underlying.Reserve orelse self.underlying.Alloc.?)(apiCast(self), size) orelse return null))[0 .. size];
+  /// size: Size in bytes. asserts size is not 0
+  /// returns the pointer to an allocated block of `size` bytes.
+  pub fn reserve(self: *@This(), size: usize) ![]u8 {
+    std.debug.assert(size != 0);
+    return @as([*]u8, @ptrCast((self.underlying.Reserve orelse self.underlying.Alloc.?)(apiCast(self), size) orelse return error.OutOfMemory))[0 .. size];
   }
 
   /// Return a pointer to the OrtKeyValuePairs structure that contains the statistics of the allocator.
@@ -2802,15 +2830,16 @@ pub const Allocator = struct {
   /// Alloc will be used if this is nullptr.
   ///
   /// self: Allocator instance
-  /// size: Size of the allocation in bytes. nullptr if size was 0 or allocation failed.
+  /// size: Size of the allocation in bytes. asserts size is not 0.
   /// stream: The stream to allocate on.
   ///
   /// returns the pointer to an allocated block of `size` bytes
   ///
   /// Note: Implementation of this function is optional and AllocOnStream may be set to a nullptr.
-  pub fn allocOnStream(self: *@This(), size: usize, stream: *Ep.SyncStream) ?[]u8 {
-    const ptr = (self.underlying.AllocOnStream orelse return self.alloc(size))(apiCast(self), size, apiCast(stream));
-    return @as([*]u8, @ptrCast(ptr orelse return null))[0 .. size];
+  pub fn allocOnStream(self: *@This(), size: usize, stream: *Ep.SyncStream) ![]u8 {
+    std.debug.assert(size != 0);
+    const ptr = (self.underlying.AllocOnStream orelse return self._alloc(size) orelse error.OutOfMemory)(apiCast(self), size, apiCast(stream));
+    return @as([*]u8, @ptrCast(ptr orelse return error.OutOfMemory))[0 .. size];
   }
 
   pub fn register(self: *@This()) !void {
@@ -5391,7 +5420,7 @@ pub const IoBinding = opaque {
 
     if (buffer == null or lengths_ptr == null or count == 0) {
       if (buffer) |b| allocator.free(b);
-      if (lengths_ptr) |l| allocator.free(@ptrCast(l));
+      if (lengths_ptr) |l| allocator.free(l);
       return error.Unbounded;
     }
     return .{ .names = buffer.?, .lengths = lengths_ptr.?[0 .. count] };

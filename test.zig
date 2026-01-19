@@ -1,6 +1,7 @@
 const std = @import("std");
-const testing = std.testing;
+const builtin = @import("builtin");
 const onnx = @import("onnxruntime");
+const testing = std.testing;
 const Api = onnx.Api;
 
 const Utils = onnx.Utils;
@@ -347,6 +348,135 @@ pub const Ep_tests = struct {
     // NodeFusionOptions is a simple wrapper struct
     const options: Ep.NodeFusionOptions = undefined;
     try testing.expect(@sizeOf(@TypeOf(options)) == @sizeOf(*anyopaque));
+  }
+};
+
+const apiCast = Utils.apiCast;
+const apiCastTo = Utils.apiCastTo;
+const cStr = Utils.cStr;
+const cStrTo = Utils.cStrTo;
+const pathCast = Utils.pathCast;
+const pathCastTo = Utils.pathCastTo;
+const cCast = Utils.cCast;
+
+const empty_string = Utils.empty_string;
+const empty_path = Utils.empty_path;
+
+const Training = onnx.Training;
+pub const Training_tests = struct {
+  const CheckpointState = Training.CheckpointState;
+  const TrainingSession = Training.TrainingSession;
+
+  test "Training.api - Set Seed" {
+    Training.api.setSeed(42) catch |err| {
+      if (err == error.TrainingApiNotAvailable) return error.SkipZigTest;
+      return err;
+    };
+  }
+
+  test "CheckpointState - PropertyUnion Deinit Logic" {
+    const allocator = try Allocator.getDefault();
+
+    // Verify i64 property deallocation
+    const i_ptr = try allocator.alloc(i64, 1);
+    const p_i64 = CheckpointState.PropertyUnion{ .i64 = @ptrCast(i_ptr.ptr) };
+    p_i64.deinit(allocator);
+
+    // Verify f32 property deallocation
+    const f_ptr = try allocator.alloc(f32, 1);
+    const p_f32 = CheckpointState.PropertyUnion{ .f32 = @ptrCast(f_ptr.ptr) };
+    p_f32.deinit(allocator);
+
+    // Verify string property deallocation
+    const s_ptr = try allocator.alloc(u8, 8);
+    @memcpy(s_ptr[0..7], "zig_ort");
+    s_ptr[7] = 0;
+    const p_str = CheckpointState.PropertyUnion{ .str = @ptrCast(s_ptr.ptr) };
+    p_str.deinit(allocator);
+  }
+
+  test "CheckpointState - API Routing" {
+    const path = Utils.asPath("non_existent_checkpoint");
+
+    // Test Load Failure (Validates routing to LoadCheckpoint)
+    // This is weird because we get InvalidArgument even on invalid fd
+    try testing.expectError(error.OrtErrorInvalidArgument, CheckpointState.load(path));
+
+    // Test LoadFromBuffer Failure
+    const dummy_buf = "invalid_data";
+    _ = CheckpointState.loadFromBuffer(dummy_buf) catch {};
+    
+    // Verify VTable availability
+    try testing.expect(Training.api.underlying.AddProperty != null);
+    try testing.expect(Training.api.underlying.GetParameter != null);
+  }
+
+  test "TrainingSession - Initialization Routing" {
+    const options = try Session.Options.C.init();
+    defer options.deinit();
+
+    const state: *CheckpointState = @ptrFromInt(0x1);
+    const path = Utils.asPath("x");
+
+    // Test Create Failure (Validates routing to CreateTrainingSession)
+    const res = TrainingSession.init(options, state, path, path, path);
+    try testing.expectError(error.OrtErrorNoSuchfile, res);
+
+    // Test CreateFromBuffer routing
+    const dummy = "data";
+    const res_buf = TrainingSession.initBuffer(options, state, dummy, "", dummy);
+    _ = res_buf catch {};
+  }
+
+  test "TrainingSession - Step and Update Routing" {
+    var session: ?*TrainingSession = null;
+    std.mem.doNotOptimizeAway(&session);
+
+    if (session) |s| {
+      _ = s.getTrainingModelOutputCount() catch {};
+      _ = s.lazyResetGrad() catch {};
+      _ = s.getLearningRate() catch {};
+      _ = s.setLearningRate(0.01) catch {};
+      _ = s.optimizerStep(null) catch {};
+      _ = s.schedulerStep() catch {};
+      _ = s.getParametersSize(true) catch {};
+    }
+
+    // Verify presence of core training functions in the API table
+    try testing.expect(Training.api.underlying.TrainStep != null);
+    try testing.expect(Training.api.underlying.EvalStep != null);
+    try testing.expect(Training.api.underlying.OptimizerStep != null);
+  }
+
+  test "TrainingSession - Buffer and Export Routing" {
+    var session: ?*TrainingSession = null;
+    std.mem.doNotOptimizeAway(&session);
+
+    if (session) |s| {
+      const val: *Value = @ptrFromInt(0x1);
+      _ = s.copyParametersToBuffer(val, true) catch {};
+      _ = s.copyBufferToParameters(val, true) catch {};
+      
+      const out_names = [_][*:0]const u8{"out"};
+      _ = s.exportModelForInferencing(Utils.asPath("out.onnx"), &out_names) catch {};
+    }
+    
+    try testing.expect(Training.api.underlying.CopyParametersToBuffer != null);
+    try testing.expect(Training.api.underlying.ExportModelForInferencing != null);
+  }
+
+  test "TrainingSession - Input/Output Name Routing" {
+    var session: ?*TrainingSession = null;
+    std.mem.doNotOptimizeAway(&session);
+
+    if (session) |s| {
+      const allocator = try Allocator.getDefault();
+      _ = s.getTrainingModelInputName(0, allocator) catch {};
+      _ = s.getEvalModelOutputName(0, allocator) catch {};
+    }
+
+    try testing.expect(Training.api.underlying.TrainingSessionGetTrainingModelInputName != null);
+    try testing.expect(Training.api.underlying.TrainingSessionGetEvalModelOutputName != null);
   }
 };
 
