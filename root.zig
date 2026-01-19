@@ -293,7 +293,7 @@ pub const Ep = struct {
 
         fn getCapability(ptr: ?*Api.c.OrtEp, graph: ?*const Api.c.OrtGraph, info: ?*Api.c.OrtEpGraphSupportInfo) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(ptr).getCapability(apiCast(graph.?), apiCast(info.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
@@ -311,7 +311,7 @@ pub const Ep = struct {
           const c_slice = @as([*]*Node, apiCast(context_nodes_out))[0..count];
 
           getSelf(ptr).compile(g_slice, f_slice, i_slice, c_slice) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
@@ -321,7 +321,7 @@ pub const Ep = struct {
 
         fn getPreferredDataLayout(ptr: ?*Api.c.OrtEp, layout_out: ?*Api.c.OrtEpDataLayout) callconv(.c) ?*Api.c.OrtStatus {
           const layout = getSelf(ptr).getPreferredDataLayout() catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           layout_out.?.* = @intFromEnum(layout);
           return null;
         }
@@ -333,32 +333,32 @@ pub const Ep = struct {
 
         fn setDynamicOptions(ptr: ?*Api.c.OrtEp, keys: [*c]const [*:0]const u8, vals: [*c]const [*:0]const u8, count: usize) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(ptr).setDynamicOptions(keys[0..count], vals[0..count]) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn onRunStart(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(ptr).onRunStart(apiCast(options.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn onRunEnd(ptr: ?*Api.c.OrtEp, options: ?*const Api.c.OrtRunOptions, sync: bool) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(ptr).onRunEnd(apiCast(options.?), sync) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn createAllocator(ptr: ?*Api.c.OrtEp, info: ?*const Api.c.OrtMemoryInfo, out: ?*?*Api.c.OrtAllocator) callconv(.c) ?*Api.c.OrtStatus {
           const alloc = getSelf(ptr).createAllocator(apiCast(info.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(alloc);
           return null;
         }
 
         fn createSyncStreamForDevice(ptr: ?*Api.c.OrtEp, dev: ?*const Api.c.OrtMemoryDevice, out: ?*?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           const stream = getSelf(ptr).createSyncStreamForDevice(apiCast(dev.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(stream);
           return null;
         }
@@ -470,7 +470,7 @@ pub const Ep = struct {
           const streams_zig: ?[]?*SyncStream = if (streams != null) @as([*]*SyncStream, apiCast(streams))[0..num] else null;
 
           getSelf(self).copyTensors(src_zig, dst_zig, streams_zig) catch |err| 
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
       };
@@ -546,19 +546,19 @@ pub const Ep = struct {
 
         fn activate(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).activate() catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn waitOnDevice(self: ?*Api.c.OrtSyncNotificationImpl, stream: ?*Api.c.OrtSyncStream) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).waitOnDevice(@as(*SyncStream, apiCast(stream.?))) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn waitOnHost(self: ?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).waitOnHost() catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
       };
@@ -653,19 +653,19 @@ pub const Ep = struct {
 
         fn createNotification(self: ?*Api.c.OrtSyncStreamImpl, out: ?*?*Api.c.OrtSyncNotificationImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).createNotification(@as(*?*SyncNotificationImpl, apiCast(out.?))) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn flush(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).flush() catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
         fn onSessionRunEnd(self: ?*Api.c.OrtSyncStreamImpl) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(self).onSessionRunEnd() catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
       };
@@ -773,7 +773,7 @@ pub const Ep = struct {
             state_out: ?*?*anyopaque,
           ) callconv(.c) ?*Api.c.OrtStatus {
             const result = getSelf(self).createState(apiCast(ctx.?)) catch |err|
-              return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+              return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
             state_out.?.* = @ptrCast(result);
             return null;
           }
@@ -785,7 +785,7 @@ pub const Ep = struct {
           ) callconv(.c) ?*Api.c.OrtStatus {
             // @ptrCast is needed because State has no underlying type
             getSelf(self).compute(@ptrCast(state.?), apiCast(kernel_ctx.?)) catch |err|
-              return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+              return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
             return null;
           }
 
@@ -1022,7 +1022,7 @@ pub const Ep = struct {
           const ep_out_slice = @as([*]*Ep.Device, apiCast(ep_devices_out))[0..max_ep_devices];
 
           const count = getSelf(ptr).getSupportedDevices(dev_slice, ep_out_slice) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           num_ep_devices_out.?.* = count;
           return null;
         }
@@ -1040,7 +1040,7 @@ pub const Ep = struct {
           const meta_slice = @as([*]const *const KeyValuePairs, apiCast(metadata))[0..num_devices];
 
           const ep = getSelf(ptr).createEp(dev_slice, meta_slice, apiCast(options.?), apiCast(logger.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           ep_out.?.* = apiCast(ep);
           return null;
         }
@@ -1076,7 +1076,7 @@ pub const Ep = struct {
           out: ?*?*Api.c.OrtAllocator,
         ) callconv(.c) ?*Api.c.OrtStatus {
           const alloc = getSelf(ptr).createAllocator(apiCast(info), apiCast(opts)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(alloc);
           return null;
         }
@@ -1087,7 +1087,7 @@ pub const Ep = struct {
 
         fn createDataTransfer(ptr: ?*Api.c.OrtEpFactory, out: ?*?*Api.c.OrtDataTransferImpl) callconv(.c) ?*Api.c.OrtStatus {
           const dt = getSelf(ptr).createDataTransfer() catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(dt);
           return null;
         }
@@ -1103,7 +1103,7 @@ pub const Ep = struct {
           out: ?*?*Api.c.OrtSyncStreamImpl,
         ) callconv(.c) ?*Api.c.OrtStatus {
           const stream = getSelf(ptr).createSyncStreamForDevice(apiCast(dev.?), apiCast(opts)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           out.?.* = apiCast(stream);
           return null;
         }
@@ -1986,13 +1986,20 @@ pub const Api = struct {
     try Api.env.init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
     errdefer Api.env.deinit();
 
+    Error.Status.oom = try .init(Error.Code.RuntimeException, "Out of memory");
+    errdefer Error.Status.oom.deinit();
+    Error.Status.released = false;
+
     if (options.telemetry_events) |state| try env.setTelemetryEventsState(state);
   }
 
   /// Frees the resources created by the `Api.init` function
   pub fn deinit() void {
-    // `Api.ort` and `version_string` are static
+    // `Api.ort` and `version_string` are static so only env needs to be deinited
     Api.env.deinit();
+
+    // Releasing the static oom error status
+    Error.Status.oom.deinit();
   }
 
   /// Returns a null terminated string of the build info including git info and cxx flags.
@@ -2171,9 +2178,25 @@ pub const Error = struct {
       return Api.ort.GetErrorCode.?(apiCast(self));
     }
 
+    var oom: *Status = undefined;
+    var released: bool = true;
+
     /// release the status
     pub fn deinit(self: *@This()) void {
-      return Api.ort.ReleaseStatus.?(apiCast(self));
+      if (@intFromPtr(self) == @intFromPtr(oom)) {
+        released = false;
+      } else {
+        Api.ort.ReleaseStatus.?(apiCast(self));
+      }
+    }
+    
+    pub fn initInfallible(code: c_uint, msg: [*:0]const u8) *@This() {
+      return init(code, msg) catch {
+        // This may only happen if the status is released outside of this wrapper and we oom twice but is still possible
+        if (released) @panic("OOM");
+        released = true;
+        return oom;
+      };
     }
   };
 
@@ -4472,7 +4495,7 @@ pub const Model = opaque {
                 return null; // Success
               } else |err| {
                 const msg = std.fmt.allocPrintSentinel(std.heap.c_allocator, "Zig Write Error: {s}", .{@errorName(err)}, 0) catch "Zig Write Error";
-                return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), msg.ptr));
+                return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), msg.ptr));
               }
             }
           }.wrapper,
@@ -4508,7 +4531,7 @@ pub const Model = opaque {
                 out.?.* = apiCast(maybe_new_info);
                 return null;
               } else |err| {
-                return Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err));
+                return Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err));
               }
             }
           }.wrapper,
@@ -5325,7 +5348,12 @@ pub const IoBinding = opaque {
         @as([*c][*c]usize, @ptrCast(&lengths_ptr)),
         &count,
     ));
-    if (buffer == null or lengths_ptr == null or count == 0) return error.Unbounded;
+
+    if (buffer == null or lengths_ptr == null or count == 0) {
+      if (buffer) |b| allocator.free(b);
+      if (lengths_ptr) |l| allocator.free(@ptrCast(l));
+      return error.Unbounded;
+    }
     return .{ .names = buffer.?, .lengths = lengths_ptr.?[0 .. count] };
   }
 
@@ -5963,14 +5991,14 @@ pub const Op = opaque {
 
         fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel_out: ?*?*anyopaque) callconv(.c) ?*Api.c.OrtStatus {
           const res = getSelf(op).createKernelV2(api.?, apiCast(info.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           kernel_out.?.* = res;
           return null;
         }
 
         fn inferShape(op: ?*const Api.c.OrtCustomOp, ctx: ?*Api.c.OrtShapeInferContext) callconv(.c) ?*Api.c.OrtStatus {
           getSelf(op).inferOutputShape(apiCast(ctx.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
@@ -5994,7 +6022,7 @@ pub const Op = opaque {
 
         fn kernelComputeV2(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Api.c.OrtStatus {
           T.computeV2(kernel_state, apiCast(context.?)) catch |err|
-            return apiCast(Error.Status.init(@intFromEnum(Error.Code.Fail), @errorName(err)) catch null);
+            return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
