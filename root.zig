@@ -3422,7 +3422,7 @@ pub const Value = opaque {
       /// Get a const pointer to the raw data inside a tensor
       pub fn getDataConst(self: *const @This(), comptime T: type) ![]const u8 {
         var ptr: ?[*]const u8 = null;
-        try Error.check(Api.ort.GetTensorData.?(apiCast(self), apiCast(&ptr)));
+        try Error.check(Api.ort.GetTensorData.?(apiCast(self), @ptrCast(&ptr)));
         return (ptr orelse return error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
@@ -4607,7 +4607,7 @@ pub const Model = opaque {
     /// The context must have a `getLocation(self: *Self, name: [*:0]const u8, value: *const Value, info: ?*const ExternalInitializerInfo) !?*ExternalInitializerInfo` method.
     pub const LocationInterface = struct {
       ptr: ?*anyopaque,
-      loc_fn: Api.c.OrtGetInitializerLocationFunc,
+      loc_fn: @typeInfo(Api.c.OrtGetInitializerLocationFunc).optional.child,
 
       pub fn fromContext(instance: anytype) @This() {
         const T = @TypeOf(instance);
@@ -4633,7 +4633,7 @@ pub const Model = opaque {
               const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(@alignCast(ctx.?));
 
               // Wrap call to Zig logic
-              if (self.getLocation(cStrTo(name, [*:0]const u8), apiCast(val.?), apiCast(info))) |maybe_new_info| {
+              if (self.getLocation(cStrTo(name, [*:0]const u8), apiCastTo(val.?, *const Value), apiCastTo(info, ?*const ExternalInitializerInfo))) |maybe_new_info| {
                 out.?.* = apiCast(maybe_new_info);
                 return null;
               } else |err| {
@@ -5016,7 +5016,7 @@ pub const Session = opaque {
       /// Append the execution provider that is responsible for the selected OrtEpDevice instances.
       pub fn appendExecutionProviderV2(
         self: *@This(), 
-        ep_devices: []const Ep.Device, 
+        ep_devices: []const *const Ep.Device, 
         options: anytype
       ) !void {
         const converted = Utils.createOptionsKVL(options, .cstr);
@@ -5605,14 +5605,20 @@ pub const Op = opaque {
     }
 
     /// Run a function in parallel.
+    /// ctx must be a struct with a `run(self: *Self, index: usize) !void` method.
     pub fn parallelFor(
       self: *const @This(), 
-      task: fn(*anyopaque, usize) callconv(.c) void, 
       total: usize, 
       num_batch: usize, 
-      user_data: ?*anyopaque
+      ctx_ptr: anytype
     ) !void {
-      try Error.check(Api.ort.KernelContext_ParallelFor.?(apiCast(self), task, total, num_batch, user_data));
+      try Error.check(Api.ort.KernelContext_ParallelFor.?(apiCast(self), &struct {
+        const Sub = @typeInfo(@TypeOf(ctx_ptr)).pointer.child;
+        fn wrapper(ctx: ?*anyopaque, index: usize) callconv(.c) void {
+          const self_: @TypeOf(ctx_ptr) = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(@alignCast(ctx.?));
+          self_.run(index);
+        }
+      }.wrapper, total, num_batch, @ptrCast(ctx_ptr)));
     }
   };
 
