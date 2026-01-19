@@ -3566,7 +3566,7 @@ pub const Value = opaque {
       /// Get data from an Opaque Value.
       /// buffer: Buffer to write data into. Must match the internal size.
       pub fn getData(self: *const @This(), comptime Out: type, out: []Out, domain_name: [*:0]const u8, type_name: [*:0]const u8) !void {
-        try Error.check(Api.ort.GetOpaqueValue.?(cStr(domain_name), cStr(type_name), apiCast(self), apiCast(out.ptr), out.len * @sizeOf(Out)));
+        try Error.check(Api.ort.GetOpaqueValue.?(cStr(domain_name), cStr(type_name), apiCast(self), @ptrCast(out.ptr), out.len * @sizeOf(Out)));
       }
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
@@ -5242,7 +5242,7 @@ pub const Session = opaque {
   }
 
   /// Run the model asynchronously
-  /// callback_ctx has a function `callback(ctx: *@TypeOf(callback_ctx), []?*Value, *Error.Status)`
+  /// callback_ctx has a function `callback(ctx: *@TypeOf(callback_ctx), []?*Value, ?*Error.Status)`
   ///
   /// WARNING: the `callback_ctx_ptr` should be static or pinned in memory until the end of the program.
   pub fn runAsync(
@@ -5257,19 +5257,22 @@ pub const Session = opaque {
     std.debug.assert(input_names.len == inputs.len);
     std.debug.assert(output_names.len == outputs.len);
 
+    const output_names_ptr: [*]const ?[*:0]const u8 = @ptrCast(output_names.ptr);
+    const outputs_ptr: [*]?*Value = @ptrCast(outputs.ptr);
+
     try Error.check(Api.ort.RunAsync.?(
         apiCast(self),
         apiCast(run_options),
         cStr(input_names.ptr),
         apiCast(inputs.ptr),
         inputs.len,
-        cStr(output_names.ptr),
+        cStr(output_names_ptr),
         output_names.len,
-        apiCast(outputs.ptr),
+        apiCast(outputs_ptr),
         &struct {pub fn callback(ctx: ?*anyopaque, vptr: [*c]?*Api.c.OrtValue, vlen: usize, status: Api.c.OrtStatusPtr) callconv(.c) void {
-          @as(@TypeOf(callback_ctx_ptr), @alignCast(apiCast(ctx))).callback(@as([*]?*Value, apiCast(vptr))[0 .. vlen], @as(*Error.Status, apiCast(status)));
+          @as(@TypeOf(callback_ctx_ptr), @alignCast(@ptrCast(ctx))).callback(apiCastTo(vptr, [*]?*Value)[0 .. vlen], apiCastTo(status, ?*Error.Status));
         }}.callback,
-        apiCast(callback_ctx_ptr),
+        @ptrCast(callback_ctx_ptr),
     ));
   }
 
