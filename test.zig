@@ -4,6 +4,11 @@ const onnx = @import("onnxruntime");
 const testing = std.testing;
 const Api = onnx.Api;
 
+const Session = onnx.Session;
+const HardwareDevice = onnx.HardwareDevice;
+const Node = onnx.Node;
+const Graph = onnx.Graph;
+
 const Utils = onnx.Utils;
 pub const Utils_tests = struct {
   // Test createOptionsKVL with .usize variant (Session Options logic)
@@ -480,6 +485,311 @@ pub const Training_tests = struct {
   }
 };
 
+const Op = onnx.Op;
+pub const Op_tests = struct {
+  const MockOp = struct {
+    ort_op: onnx.Op.Custom = undefined,
+    called_compute: bool = false,
+    
+    pub fn getName(_: *const @This()) [*:0]const u8 { return "Mock"; }
+    pub fn getExecutionProviderType(_: *const @This()) ?[*:0]const u8 { return null; }
+    pub fn getInputType(_: *const @This(), _: usize) onnx.Value.Sub.Tensor.ElementDataType { return .f32; }
+    pub fn getInputTypeCount(_: *const @This()) usize { return 1; }
+    pub fn getOutputType(_: *const @This(), _: usize) onnx.Value.Sub.Tensor.ElementDataType { return .f32; }
+    pub fn getOutputTypeCount(_: *const @This()) usize { return 1; }
+    pub fn createKernelV2(_: *const @This(), _: *const Api.c.OrtApi, _: *const onnx.Op.KernelInfo) !*anyopaque { return @ptrFromInt(0x1); }
+    
+    pub fn computeV2(kernel: *anyopaque, _: *onnx.Op.KernelContext) !void {
+      try testing.expectEqual(@as(usize, 0x1), @intFromPtr(kernel));
+      // We use a global or pointer to verify the call since compute is static
+      routing_check = true;
+    }
+    pub fn destroyKernel(_: *anyopaque) void {}
+  };
+
+  var routing_check: bool = false;
+
+  test "Op.Custom - VTable Routing" {
+    var mock = MockOp{};
+    mock.ort_op = onnx.Op.Custom.init(MockOp);
+    const c_op = Utils.apiCast(&mock.ort_op);
+    const vt = mock.ort_op.underlying;
+
+    try testing.expectEqualStrings("Mock", std.mem.sliceTo(vt.GetName.?(c_op), 0));
+    try testing.expectEqual(@as(usize, 1), vt.GetInputTypeCount.?(c_op));
+    
+    var kernel: ?*anyopaque = null;
+    try onnx.Error.check(vt.CreateKernelV2.?(c_op, undefined, undefined, &kernel));
+    
+    routing_check = false;
+    try onnx.Error.check(vt.KernelComputeV2.?(kernel, undefined));
+    try testing.expect(routing_check);
+  }
+
+  test "Op and Attr - Logic" {
+    const attr = try onnx.Op.Attr.initInt("axis", 1);
+    defer attr.deinit();
+    
+    try testing.expectEqualStrings("axis", std.mem.sliceTo(try attr.getName(), 0));
+    try testing.expectEqual(onnx.Op.Attr.Type.INT, try attr.getType());
+
+    const tensor_attr = try onnx.Op.Attr.initString("label", "test");
+    defer tensor_attr.deinit();
+
+    // Verify Read logic
+    var buf: [10]u8 = undefined;
+    _ = try tensor_attr.read(.STRING, &buf);
+  }
+};
+
+const Logging = onnx.Logging;
+pub const Logging_tests = struct {
+  test "Interface - Routing" {
+    const MockLogger = struct {
+      called: bool = false,
+      pub fn log(self: *@This(), severity: onnx.Logging.Level, category: ?[*:0]const u8, id: ?[*:0]const u8, loc: ?[*:0]const u8, msg: ?[*:0]const u8) void {
+        _ = .{ severity, category, id, loc, msg };
+        self.called = true;
+      }
+    };
+    var mock = MockLogger{};
+    const interface = onnx.Logging.Interface.fromContext(&mock);
+    interface.log_fn(interface.ptr, @intFromEnum(onnx.Logging.Level.info), "cat", "id", "loc", "msg");
+    try testing.expect(mock.called);
+  }
+};
+
+const Error = onnx.Error;
+pub const Error_tests = struct {
+  test "Error - Status and Logic" {
+    const status = try Error.Status.init(1, "test error");
+    {
+      errdefer status.deinit();
+      try testing.expectEqual(@as(c_uint, 1), status.getErrorCode());
+      try testing.expectEqualStrings("test error", std.mem.sliceTo(status.getErrorMessage(), 0));
+    }
+
+    const err_res = Error.check(Utils.apiCast(status));
+    try testing.expectError(error.OrtErrorFail, err_res);
+  }
+};
+
+const KeyValuePairs = onnx.KeyValuePairs;
+pub const KeyValuePairs_tests = struct {
+  test "KeyValuePairs - CRUD" {
+    const kv = try onnx.KeyValuePairs.init();
+    defer kv.deinit();
+    kv.add("key", "val");
+    try testing.expectEqualStrings("val", std.mem.sliceTo(kv.get("key").?, 0));
+    const keys, const vals = kv.getKeyValues();
+    try testing.expectEqualStrings("key", std.mem.sliceTo(keys[0], 0));
+    try testing.expectEqualStrings("val", std.mem.sliceTo(vals[0], 0));
+    kv.remove("key");
+    try testing.expect(kv.get("key") == null);
+  }
+};
+
+const Allocator = onnx.Allocator;
+pub const Allocator_tests = struct {
+  test "Allocator - Config and Stats" {
+    const cfg = try onnx.Allocator.ArenaCfg.init(.{});
+    defer cfg.deinit();
+    const cfg2 = try onnx.Allocator.ArenaCfg.init_DeprecatedV1(.{});
+    defer cfg2.deinit();
+
+    const allocator = try onnx.Allocator.getDefault();
+    const mem = allocator._alloc(10).?;
+    @memset(mem, 0xAA);
+    const reserved = try allocator.reserve(10);
+    allocator.free(mem.ptr);
+    allocator.free(reserved.ptr);
+
+    if (try allocator.stats()) |stats| stats.deinit();
+    _ = allocator.info().name() catch "Cpu";
+  }
+};
+
+const TensorTypeAndShapeInfo = onnx.TensorTypeAndShapeInfo;
+pub const TensorTypeAndShapeInfo_tests = struct {
+  test "TensorTypeAndShapeInfo - Properties" {
+    const info = try onnx.TensorTypeAndShapeInfo.C.init();
+    defer info.deinit();
+    try info.setElementType(.f32);
+    const dims = [_]i64{ 1, 3, 224, 224 };
+    try info.setDimensions(&dims);
+
+    try testing.expectEqual(onnx.Value.Sub.Tensor.ElementDataType.f32, try info.elementType());
+    try testing.expectEqual(@as(usize, 4), try info.dimensionsCount());
+    try testing.expectEqual(@as(usize, 1 * 3 * 224 * 224), try info.shapeElementCount());
+  }
+};
+
+pub const Value = onnx.Value;
+pub const Value_tests = struct {
+  test "Value - Tensor Operations" {
+    const allocator = try onnx.Allocator.getDefault();
+    const dims = [_]i64{ 2, 2 };
+    const tensor = try onnx.Value.Sub.Tensor.init(allocator, &dims, .f32);
+    defer tensor.deinit();
+
+    try testing.expect(try tensor.toValue().isTensor());
+    const data = try tensor.getData(f32);
+    data[0] = 42.0;
+    try testing.expectEqual(@as(f32, 42.0), (try tensor.at(&[_]i64{ 0, 0 }, f32)).*);
+  }
+
+  test "Value - Type Casting" {
+    const allocator = try onnx.Allocator.getDefault();
+    const tensor = try onnx.Value.Sub.Tensor.init(allocator, &[_]i64{1}, .i64);
+    defer tensor.deinit();
+
+    const val = tensor.toValue();
+    const u = try val.asUnion();
+    try testing.expect(u == .TENSOR);
+    _ = val.asType(.TENSOR);
+  }
+
+  test "Value - String Tensor" {
+    const allocator = try onnx.Allocator.getDefault();
+    const tensor = try onnx.Value.Sub.Tensor.init(allocator, &[_]i64{2}, .string);
+    defer tensor.deinit();
+
+    const st = @as(*onnx.Value.Sub.Tensor.String, @ptrCast(tensor));
+    const strs = [_][*:0]const u8{ "a", "bc" };
+    try st.fillString(&strs);
+    try testing.expectEqual(@as(usize, 1), try st.getStringElementLength(0));
+    try testing.expectEqual(@as(usize, 2), try st.getStringElementLength(1));
+  }
+};
+
+pub const ModelEditor_tests = struct {
+  test "Graph Surgery - Identity Model" {
+    const model = try onnx.Model.init(&[_][*:0]const u8{""}, &[_]c_int{21});
+    defer model.deinit();
+    const graph = try onnx.Graph.init();
+
+    const info = try onnx.TensorTypeAndShapeInfo.C.init();
+    defer info.deinit();
+    try info.setElementType(.f32);
+    try info.setDimensions(&[_]i64{1});
+
+    const v_info = try Api.editor.createValueInfo("X", try onnx.TypeInfo.forTensor(info));
+    const v_out = try Api.editor.createValueInfo("Y", try onnx.TypeInfo.forTensor(info));
+
+    const node = try onnx.Node.init("Identity", "", "id1", &[_][*:0]const u8{"X"}, &[_][*:0]const u8{"Y"}, &[_]*onnx.Op.Attr{});
+    try graph.addNode(node);
+    var inputs = [_]*onnx.Value.Info{v_info};
+    try graph.setInputs(&inputs);
+    var outputs = [_]*onnx.Value.Info{v_out};
+    try graph.setOutputs(&outputs);
+
+    try model.addGraph(graph);
+    try testing.expectEqual(@as(usize, 1), try graph.getNodeCount());
+  }
+
+  test "Op.Attr - Scalar and Array" {
+    const a1 = try onnx.Op.Attr.initInt("test", 10);
+    defer a1.deinit();
+    try testing.expectEqual(onnx.Op.Attr.Type.INT, try a1.getType());
+
+    const a2 = try onnx.Op.Attr.initFloats("f", &[_]f32{ 1.0, 2.0 });
+    defer a2.deinit();
+    var buf: [8]u8 = undefined;
+    _ = try a2.read(.FLOATS, &buf);
+  }
+};
+
+const Compiler = onnx.Api.compiler;
+pub const Compiler_tests = struct {
+  test "Compiler - Routing" {
+    const opts = try onnx.Session.Options.C.init();
+    defer opts.deinit();
+    const c_opts = try onnx.Model.CompilationOptions.init(opts);
+    defer c_opts.deinit();
+
+    const MockWriter = struct {
+      pub fn write(_: *@This(), data: []const u8) !void { _ = data; }
+    };
+    var mock = MockWriter{};
+    try c_opts.setOutputModelWriteFunc(onnx.Model.CompilationOptions.WriteInterface.fromContext(&mock));
+  }
+};
+
+const IoBinding = onnx.IoBinding;
+pub const IoBinding_tests = struct {
+  test "IoBinding - Full Routing" {
+    const original_api = Api.ort;
+    var mock_api = original_api.*;
+    Api.ort = &mock_api;
+    defer Api.ort = original_api;
+
+    // Helper to overwrite const fields in the vtable copy
+    const patch = struct {
+      fn do(target: anytype, func: anytype) void {
+        @as(*?*const anyopaque, @ptrCast(@constCast(target))).* = @ptrCast(&func);
+      }
+    };
+
+    patch.do(&mock_api.CreateIoBinding, struct {
+      fn mock(_: ?*Api.c.OrtSession, out: [*c]?*Api.c.OrtIoBinding) callconv(.c) ?*Api.c.OrtStatus {
+        out.?.* = @ptrFromInt(0xdead); return null;
+      }
+    }.mock);
+
+    const session: *onnx.Session = @ptrFromInt(0x1);
+    const binding = try onnx.IoBinding.init(session);
+    
+    patch.do(&mock_api.BindInput, struct {
+      fn mock(_: ?*Api.c.OrtIoBinding, _: [*c]const u8, _: ?*const Api.c.OrtValue) callconv(.c) ?*Api.c.OrtStatus { return null; }
+    }.mock);
+    try binding.bindInput("X", @ptrFromInt(0x1));
+
+    patch.do(&mock_api.SynchronizeBoundInputs, struct {
+      fn mock(_: ?*Api.c.OrtIoBinding) callconv(.c) ?*Api.c.OrtStatus { return null; }
+    }.mock);
+    try binding.synchronizeInputs();
+
+    patch.do(&mock_api.ReleaseIoBinding, struct {
+      fn mock(_: ?*Api.c.OrtIoBinding) callconv(.c) void {}
+    }.mock);
+    binding.deinit();
+  }
+};
+
+const ThreadingOptions = onnx.ThreadingOptions;
+pub const ThreadingOptions_tests = struct {
+  test "ThreadingInterface - Routing" {
+    const MockThreader = struct {
+      pub fn create(_: *@This(), _: ?*const fn (?*anyopaque) callconv(.c) void, _: ?*anyopaque) ?*const anyopaque { return @ptrFromInt(0x1); }
+      pub fn join(_: *const anyopaque) void {}
+    };
+    var mock = MockThreader{};
+    const interface = onnx.ThreadingOptions.ThreadingInterface.fromContext(&mock);
+    const handle = interface.create_fn(interface.ptr, null, null);
+    interface.join_fn(handle);
+  }
+};
+
+pub const Misc_tests = struct {
+  test "PrepackedWeightsContainer - Lifecycle" {
+    const container = try onnx.PrepackedWeightsContainer.init();
+    container.deinit();
+  }
+
+  test "Api - Providers and Devices" {
+    const p = try Api.getAvailableProviders();
+    defer p.deinit() catch {};
+    _ = p.has("CPU");
+    
+    _ = Api.getCurrentGpuDeviceId() catch {};
+    _ = Api.getBuildInfoString();
+  }
+};
+
+//---
+//Referencing
+//---
+
 fn ArgsTuple(comptime Function: type) ?type {
   @setEvalBranchQuota(1000_000);
   const info = @typeInfo(Function);
@@ -574,16 +884,6 @@ fn refAllDeclsRecursiveExcerptC(comptime T: type) void {
     }
   }
 }
-
-const Error = onnx.Error;
-const Op = onnx.Op;
-const Session = onnx.Session;
-const HardwareDevice = onnx.HardwareDevice;
-const Allocator = onnx.Allocator;
-const Value = onnx.Value;
-const Node = onnx.Node;
-const Graph = onnx.Graph;
-const KeyValuePairs = onnx.KeyValuePairs;
 
 test {
   refAllDeclsRecursiveExcerptC(onnx);

@@ -2147,9 +2147,7 @@ pub const Api = struct {
     try Error.check(Api.ort.GetAvailableProviders.?(&ptrs, &len));
     if (len < 0) return error.InvalidLength;
     return .{ .providers = (ptrs orelse return error.OutOfMemory)[0 .. @intCast(len)] };
-    
   }
-
 
   /// Set current GPU device ID.
   /// Useful when multiple-GPUs are installed and it is required to restrict execution to a single GPU.
@@ -2209,9 +2207,12 @@ pub const Logging = struct {
     /// if (@bitSizeOf(@TypeOf(context)) != 0) then `context` must outlive the instance creator and any created instances
     pub fn fromContext(context: anytype) @This() {
       const T = @TypeOf(context);
-      const Sub = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+      const Sub = blk: {
+        const Temp = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+        break :blk if (@typeInfo(Temp) == .pointer) @typeInfo(Temp).pointer.child else Temp;
+      };
       return .{
-        .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(context),
+        .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(context),
         .log_fn = &struct {
           fn log_fn(
             ctx: ?*anyopaque,
@@ -2221,8 +2222,8 @@ pub const Logging = struct {
             code_location: [*c]const u8,
             messages: [*c]const u8
           ) callconv(.c) void {
-            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
-            original.log(@as(Logging.Level, @enumFromInt(severity)), category, logid, code_location, messages);
+            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @alignCast(@ptrCast(ctx.?));
+            original.log(@as(Logging.Level, @enumFromInt(severity)), cStrTo(category, ?[*:0]const u8), cStrTo(logid, ?[*:0]const u8), cStrTo(code_location, ?[*:0]const u8), cStrTo(messages, ?[*:0]const u8));
           }
         }.log_fn,
       };
@@ -3037,30 +3038,32 @@ pub const ThreadingOptions = struct {
   /// since Version 1.14
   intraop_thread_affinity: ?[*:0]const u8 = null,
 
-  const ThreadingInterface = struct {
+  pub const ThreadingInterface = struct {
     ptr: ?*anyopaque,
-    create_fn: Api.c.OrtCustomCreateThreadFn,
-    join_fn: Api.c.OrtCustomJoinThreadFn,
+    create_fn: @typeInfo(Api.c.OrtCustomCreateThreadFn).optional.child,
+    join_fn: @typeInfo(Api.c.OrtCustomJoinThreadFn).optional.child,
 
     /// the instances must have
-    ///   - `pub fn create(self: *Self, worker: *const fn(?*anyopaque), arg: ?*anyopaque) ?*anyopaque`
-    ///   - `pub fn join(self: *Self, handle: *anyopaque) void` interface
+    ///   - `pub fn create(self: *Self, worker: *const fn(?*anyopaque), arg: ?*anyopaque) ?*const anyopaque`
+    ///   - `pub fn join(handle: *const anyopaque) void` interface
     /// interface can be a pointer to a non-0 sized struct or an instance of 0 sized struct
     pub fn fromContext(instance: anytype) @This() {
       const T = @TypeOf(instance);
-      const Sub = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+      const Sub = blk: {
+        const Temp = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+        break :blk if (@typeInfo(Temp) == .pointer) @typeInfo(Temp).pointer.child else Temp;
+      };
       return .{
         .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(instance),
         .create_fn = &struct {
           pub fn create(ctx: ?*anyopaque, worker: ?*const fn(?*anyopaque) callconv(.c) void, arg: ?*anyopaque) callconv(.c) Api.c.OrtCustomThreadHandle {
-            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
+            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(ctx.?);
             return @ptrCast(original.create(worker, arg));
           }
         }.create,
         .join_fn = &struct {
-          pub fn join(ctx: ?*anyopaque, handle: Api.c.OrtCustomThreadHandle) callconv(.c) void {
-            const original: *Sub = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(ctx.?);
-            original.join(@ptrCast(handle));
+          pub fn join(handle: Api.c.OrtCustomThreadHandle) callconv(.c) void {
+            Sub.join(@ptrCast(handle));
           }
         }.join,
       };
@@ -3412,15 +3415,15 @@ pub const Value = opaque {
       /// Used to read/write/modify the internal tensor data directly.
       pub fn getData(self: *@This(), comptime T: type) ![]T {
         var ptr: ?[*]T = null;
-        try Error.check(Api.ort.GetTensorMutableData.?(apiCast(self), apiCast(&ptr)));
-        return (ptr orelse error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
+        try Error.check(Api.ort.GetTensorMutableData.?(apiCast(self), @ptrCast(&ptr)));
+        return (ptr orelse return error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
       /// Get a const pointer to the raw data inside a tensor
       pub fn getDataConst(self: *const @This(), comptime T: type) ![]const u8 {
         var ptr: ?[*]const u8 = null;
         try Error.check(Api.ort.GetTensorData.?(apiCast(self), apiCast(&ptr)));
-        return (ptr orelse error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
+        return (ptr orelse return error.OutOfMemory)[0 .. try self.getSizeInBytes() / @sizeOf(T)];
       }
 
       /// Compute total size in bytes of the tensor data contained in an OrtValue.
@@ -3437,9 +3440,9 @@ pub const Value = opaque {
         return out orelse error.OutOfMemory;
       }
 
-      pub fn at(self: *@This(), indices: []i64, comptime T: type) !*T {
+      pub fn at(self: *@This(), indices: []const i64, comptime T: type) !*T {
         var out: ?*T = null;
-        try Error.check(Api.ort.TensorAt.?(apiCast(self), indices.ptr, indices.len, apiCast(&out)));
+        try Error.check(Api.ort.TensorAt.?(apiCast(self), indices.ptr, indices.len, @ptrCast(&out)));
         return out.?; // returns pointer in memory so this can't be null
       }
 
@@ -3493,6 +3496,10 @@ pub const Value = opaque {
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return @ptrCast(self_ptr);
       }
+
+      pub fn deinit(self: *@This()) void {
+        self.toValue().deinit();
+      }
     };
 
     pub const Sequence = opaque {
@@ -3512,6 +3519,10 @@ pub const Value = opaque {
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return @ptrCast(self_ptr);
+      }
+
+      pub fn deinit(self: *@This()) void {
+        self.toValue().deinit();
       }
     };
 
@@ -3537,6 +3548,10 @@ pub const Value = opaque {
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return @ptrCast(self_ptr);
       }
+
+      pub fn deinit(self: *@This()) void {
+        self.toValue().deinit();
+      }
     };
 
     pub const Opaque = opaque {
@@ -3556,6 +3571,10 @@ pub const Value = opaque {
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return @ptrCast(self_ptr);
+      }
+
+      pub fn deinit(self: *@This()) void {
+        self.toValue().deinit();
       }
     };
 
@@ -3724,6 +3743,10 @@ pub const Value = opaque {
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return @ptrCast(self_ptr);
       }
+
+      pub fn deinit(self: *@This()) void {
+        self.toValue().deinit();
+      }
     };
 
     pub const Optional = opaque {
@@ -3737,6 +3760,10 @@ pub const Value = opaque {
 
       pub fn toValue(self_ptr: anytype) Utils.CopyPointerAttrs(@TypeOf(self_ptr), .one, Value) {
         return @ptrCast(self_ptr);
+      }
+
+      pub fn deinit(self: *@This()) void {
+        self.toValue().deinit();
       }
     };
   };
@@ -3759,12 +3786,12 @@ pub const Value = opaque {
     };
   }
 
-  pub fn asUnion(self_ptr: anytype) AsUnion(@TypeOf(self_ptr)) {
+  pub fn asUnion(self_ptr: anytype) !AsUnion(@TypeOf(self_ptr)) {
     const U = AsUnion(@TypeOf(self_ptr));
     switch (try self_ptr.getType()) {
-      inline else => |t| return @unionInit(U, @tagName(t), apiCast(self_ptr)),
+      inline else => |t| return @unionInit(U, @tagName(t), @ptrCast(self_ptr)),
     }
-    unreachable;
+    return error.InvalidType;
   }
 
   /// You may use inline switching to get a comptime value for t and then cast to appropriate type
@@ -4548,15 +4575,21 @@ pub const Model = opaque {
 
       pub fn fromContext(instance: anytype) @This() {
         const T = @TypeOf(instance);
-        const Ptr = if (@typeInfo(T) == .pointer) T else *T;
-        const Sub = @typeInfo(Ptr).pointer.child;
+        const Ptr = blk: {
+          const Temp = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+          break :blk if (@typeInfo(Temp) == .pointer) Temp else *Temp;
+        };
+        const Sub = blk: {
+          const Temp = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+          break :blk if (@typeInfo(Temp) == .pointer) @typeInfo(Temp).pointer.child else Temp;
+        };
 
         return .{
-          .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(instance),
+          .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
           .write_fn = struct {
             fn wrapper(ctx: ?*anyopaque, buffer: ?*const anyopaque, len: usize) callconv(.c) ?*Api.c.OrtStatus {
-              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(@alignCast(ctx.?));
-              const data: []const u8 = @as([*]const u8, apiCast(buffer.?))[0..len];
+              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(@alignCast(ctx.?));
+              const data: []const u8 = @as([*]const u8, @ptrCast(buffer.?))[0..len];
 
               if (self.write(data)) |_| {
                 return null; // Success
@@ -4578,11 +4611,17 @@ pub const Model = opaque {
 
       pub fn fromContext(instance: anytype) @This() {
         const T = @TypeOf(instance);
-        const Ptr = if (@typeInfo(T) == .pointer) T else *T;
-        const Sub = @typeInfo(Ptr).pointer.child;
+        const Ptr = blk: {
+          const Temp = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+          break :blk if (@typeInfo(Temp) == .pointer) Temp else *Temp;
+        };
+        const Sub = blk: {
+          const Temp = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+          break :blk if (@typeInfo(Temp) == .pointer) @typeInfo(Temp).pointer.child else Temp;
+        };
 
         return .{
-          .ptr = if (@bitSizeOf(Sub) == 0) null else apiCast(instance),
+          .ptr = if (@bitSizeOf(Sub) == 0) null else @ptrCast(instance),
           .loc_fn = struct {
             fn wrapper(
               ctx: ?*anyopaque,
@@ -4591,7 +4630,7 @@ pub const Model = opaque {
               info: ?*const Api.c.OrtExternalInitializerInfo,
               out: [*c]?*Api.c.OrtExternalInitializerInfo,
             ) callconv(.c) ?*Api.c.OrtStatus {
-              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else apiCast(@alignCast(ctx.?));
+              const self: Ptr = if (@bitSizeOf(Sub) == 0) @constCast(&Sub{}) else @ptrCast(@alignCast(ctx.?));
 
               // Wrap call to Zig logic
               if (self.getLocation(cStrTo(name, [*:0]const u8), apiCast(val.?), apiCast(info))) |maybe_new_info| {
@@ -5998,84 +6037,84 @@ pub const Op = opaque {
     /// - fn computeV1(kernel_state: *anyopaque, context: *KernelContext) void
     pub fn init(comptime T: type) @This() {
       const VTable = struct {
-        fn getSelf(ptr: ?*const Api.c.OrtCustomOp) *const T {
-          return @fieldParentPtr("ort_op", @as(*const Custom, apiCast(ptr.?)));
+        fn getSelf(ptr: [*c]const Api.c.OrtCustomOp) *const T {
+          return @fieldParentPtr("ort_op", apiCastTo(ptr.?, *const Custom));
         }
 
-        fn createKernelV1(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo) callconv(.c) ?*anyopaque {
+        fn createKernelV1(op: [*c]const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo) callconv(.c) ?*anyopaque {
           return getSelf(op).createKernelV1(api.?, apiCast(info.?)) catch null;
         }
 
-        fn getName(op: ?*const Api.c.OrtCustomOp) callconv(.c) [*c]const u8 {
+        fn getName(op: [*c]const Api.c.OrtCustomOp) callconv(.c) [*c]const u8 {
           return cStr(getSelf(op).getName());
         }
 
-        fn getEPType(op: ?*const Api.c.OrtCustomOp) callconv(.c) ?[*c]const u8 {
+        fn getEPType(op: [*c]const Api.c.OrtCustomOp) callconv(.c) [*c]const u8 {
           return cStr(getSelf(op).getExecutionProviderType());
         }
 
-        fn getInputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
+        fn getInputType(op: [*c]const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
           return @intFromEnum(getSelf(op).getInputType(index));
         }
 
-        fn getInputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
+        fn getInputTypeCount(op: [*c]const Api.c.OrtCustomOp) callconv(.c) usize {
           return getSelf(op).getInputTypeCount();
         }
 
-        fn getOutputType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
+        fn getOutputType(op: [*c]const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.ONNXTensorElementDataType {
           return @intFromEnum(getSelf(op).getOutputType(index));
         }
 
-        fn getOutputTypeCount(op: ?*const Api.c.OrtCustomOp) callconv(.c) usize {
+        fn getOutputTypeCount(op: [*c]const Api.c.OrtCustomOp) callconv(.c) usize {
           return getSelf(op).getOutputTypeCount();
         }
 
-        fn getInputChar(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
+        fn getInputChar(op: [*c]const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
           return @intFromEnum(getSelf(op).getInputCharacteristic(index));
         }
 
-        fn getOutputChar(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
+        fn getOutputChar(op: [*c]const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtCustomOpInputOutputCharacteristic {
           return @intFromEnum(getSelf(op).getOutputCharacteristic(index));
         }
 
-        fn getInputMemType(op: ?*const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtMemType {
+        fn getInputMemType(op: [*c]const Api.c.OrtCustomOp, index: usize) callconv(.c) Api.c.OrtMemType {
           return @intFromEnum(getSelf(op).getInputMemoryType(index));
         }
 
-        fn getVarInMin(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+        fn getVarInMin(op: [*c]const Api.c.OrtCustomOp) callconv(.c) c_int {
           return getSelf(op).getVariadicInputMinArity();
         }
 
-        fn getVarInHomog(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+        fn getVarInHomog(op: [*c]const Api.c.OrtCustomOp) callconv(.c) c_int {
           return @intFromBool(getSelf(op).getVariadicInputHomogeneity());
         }
 
-        fn getVarOutMin(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+        fn getVarOutMin(op: [*c]const Api.c.OrtCustomOp) callconv(.c) c_int {
           return getSelf(op).getVariadicOutputMinArity();
         }
 
-        fn getVarOutHomog(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+        fn getVarOutHomog(op: [*c]const Api.c.OrtCustomOp) callconv(.c) c_int {
           return @intFromBool(getSelf(op).getVariadicOutputHomogeneity());
         }
 
-        fn createKernelV2(op: ?*const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel_out: ?*?*anyopaque) callconv(.c) ?*Api.c.OrtStatus {
-          const res = getSelf(op).createKernelV2(api.?, apiCast(info.?)) catch |err|
+        fn createKernelV2(op: [*c]const Api.c.OrtCustomOp, api: ?*const Api.c.OrtApi, info: ?*const Api.c.OrtKernelInfo, kernel_out: ?*?*anyopaque) callconv(.c) ?*Api.c.OrtStatus {
+          const res = getSelf(op).createKernelV2(api.?, apiCastTo(info.?, *const Op.KernelInfo)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           kernel_out.?.* = res;
           return null;
         }
 
-        fn inferShape(op: ?*const Api.c.OrtCustomOp, ctx: ?*Api.c.OrtShapeInferContext) callconv(.c) ?*Api.c.OrtStatus {
-          getSelf(op).inferOutputShape(apiCast(ctx.?)) catch |err|
+        fn inferShape(op: [*c]const Api.c.OrtCustomOp, ctx: ?*Api.c.OrtShapeInferContext) callconv(.c) ?*Api.c.OrtStatus {
+          getSelf(op).inferOutputShape(apiCastTo(ctx.?, *const ShapeInferContext)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
 
-        fn getStartVer(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+        fn getStartVer(op: [*c]const Api.c.OrtCustomOp) callconv(.c) c_int {
           return getSelf(op).getStartVersion();
         }
 
-        fn getEndVer(op: ?*const Api.c.OrtCustomOp) callconv(.c) c_int {
+        fn getEndVer(op: [*c]const Api.c.OrtCustomOp) callconv(.c) c_int {
           return getSelf(op).getEndVersion();
         }
 
@@ -6086,11 +6125,11 @@ pub const Op = opaque {
         }
 
         fn kernelDestroy(kernel_state: ?*anyopaque) callconv(.c) void {
-          T.destroyKernel(kernel_state);
+          T.destroyKernel(kernel_state.?);
         }
 
         fn kernelComputeV2(kernel_state: ?*anyopaque, context: ?*Api.c.OrtKernelContext) callconv(.c) ?*Api.c.OrtStatus {
-          T.computeV2(kernel_state, apiCast(context.?)) catch |err|
+          T.computeV2(kernel_state.?, apiCastTo(context.?, *KernelContext)) catch |err|
             return apiCast(Error.Status.initInfallible(@intFromEnum(Error.Code.Fail), @errorName(err)));
           return null;
         }
