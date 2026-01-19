@@ -1958,9 +1958,9 @@ pub const Api = struct {
         const panicFn = struct {pub fn panicFn() callconv(.c) noreturn {
           @panic("cannot call any function inside " ++ @typeName(T) ++ " as it was not initialized");
         }}.panicFn;
-        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = apiCast(&panicFn);
+        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = @ptrCast(&panicFn);
       } else {
-        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = apiCast(&struct {pub fn panicFn() callconv(.c) noreturn {
+        inline for (@typeInfo(T).@"struct".fields) |f| @field(retval, f.name) = @ptrCast(&struct {pub fn panicFn() callconv(.c) noreturn {
           @panic("cannot call " ++ f.name ++ " as " ++ @typeName(T) ++ " was not initialized");
         }}.panicFn);
       }
@@ -1973,20 +1973,20 @@ pub const Api = struct {
   /// You MUST call this function before creating anything.
   /// You need to call `deinitApi` to free resources created by this function
   pub fn init(options: Options, comptime comptime_options: ComptimeOptions) !void {
-    base = apiCast(Api.c.OrtGetApiBase());
-    ort = apiCast(base.GetApi.?(c.ORT_API_VERSION) orelse return error.ApiVersionMismatch);
-    version_string = std.mem.sliceTo(@as([*:0] const u8, apiCast(base.GetVersionString.?())), 0);
+    base = Api.c.OrtGetApiBase();
+    ort = base.GetApi.?(c.ORT_API_VERSION) orelse return error.ApiVersionMismatch;
+    version_string = std.mem.sliceTo(cStrTo(base.GetVersionString.?(), ?[*:0] const u8) orelse @as([*:0] const u8, @ptrCast(&empty_string)), 0);
 
-    editor.underlying = if (options.editor) apiCast(ort.GetModelEditorApi.?()) else comptime_options.impl(comptime_options.editor_behavior, c.OrtModelEditorApi);
-    compiler.underlying = if (options.compiler) apiCast(ort.GetCompileApi.?()) else comptime_options.impl(comptime_options.compile_behavior, c.OrtCompileApi);
-    Ep.api.underlying = if (options.ep) apiCast(ort.GetEpApi.?()) else comptime_options.impl(comptime_options.ep_behavior, c.OrtEpApi);
-    const training_fallback = comptime_options.impl(comptime_options.training_behavior, c.OrtTrainingApi);
-    Training.api.underlying = if (options.training) apiCast(ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
+    editor.underlying = if (options.editor) ort.GetModelEditorApi.?() else ComptimeOptions.impl(comptime_options.editor_behavior, c.OrtModelEditorApi);
+    compiler.underlying = if (options.compiler) ort.GetCompileApi.?() else ComptimeOptions.impl(comptime_options.compile_behavior, c.OrtCompileApi);
+    Ep.api.underlying = if (options.ep) ort.GetEpApi.?() else ComptimeOptions.impl(comptime_options.ep_behavior, c.OrtEpApi);
+    const training_fallback = ComptimeOptions.impl(comptime_options.training_behavior, c.OrtTrainingApi);
+    Training.api.underlying = if (options.training) (ort.GetTrainingApi.?(c.ORT_API_VERSION) orelse return error.TrainingApiNotAvailable) else training_fallback;
 
     try Api.env.init(options.log_level, options.log_id, options.logging_interface, options.threading_options);
     errdefer Api.env.deinit();
 
-    Error.Status.oom = try .init(Error.Code.RuntimeException, "Out of memory");
+    Error.Status.oom = try .init(@intFromEnum(Error.Code.RuntimeException), "Out of memory");
     errdefer Error.Status.oom.deinit();
     Error.Status.released = false;
 
@@ -2080,7 +2080,7 @@ pub const Api = struct {
 pub const Logging = struct {
   /// Levels of logging verbosity, from least severe (verbose) to most severe (fatal).
   pub const Level = enum(Api.c.OrtLoggingLevel) {
-    verbose = @bitCast(Api.c.ORT_LOGGING_LEVEL_VERBOSE),
+    debug = @bitCast(Api.c.ORT_LOGGING_LEVEL_VERBOSE),
     info = @bitCast(Api.c.ORT_LOGGING_LEVEL_INFO),
     warning = @bitCast(Api.c.ORT_LOGGING_LEVEL_WARNING),
     @"error" = @bitCast(Api.c.ORT_LOGGING_LEVEL_ERROR),

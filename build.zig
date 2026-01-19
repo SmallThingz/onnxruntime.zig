@@ -24,26 +24,34 @@ pub fn build(b: *std.Build) !void {
   addTestStep(b, mod, target, optimize) catch {}; // |err| std.log.warn("Failed to add test step, error: {}", .{err});
 }
 
+fn exists(path: []const u8) bool {
+  std.fs.cwd().access(path, .{}) catch return false;
+  return true;
+}
+
 fn addTestStep(b: *std.Build, mod: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) !void {
   const test_step = b.step("test", "Run tests");
-  const test_dir_name = "tests";
+  const test_file_name = "test.zig";
+  const test_runner_name = "test_runner.zig";
 
-  var test_dir = try std.fs.cwd().openDir(test_dir_name, .{ .access_sub_paths = true, .iterate = true });
-  defer test_dir.close();
+  // we don't care about time-of-check time-of-use race conditions as this is a simple test runner
+  if (!exists(test_file_name)) return error.MissingTestFile;
+  if (!exists(test_runner_name)) return error.MissingTestRunner;
 
-  var it = test_dir.iterate();
-  while (try it.next()) |entry| {
-    const tests = b.addTest(.{
-      .root_module = b.createModule(.{
-        .root_source_file = b.path(b.pathJoin(&.{test_dir_name, entry.name})),
-        .target = target,
-        .optimize = optimize,
-      }),
-    });
+  const tests = b.addTest(.{
+    .root_module = b.createModule(.{
+      .root_source_file = b.path(test_file_name),
+      .target = target,
+      .optimize = optimize,
+    }),
+    .test_runner = .{
+      .path = b.path(test_runner_name),
+      .mode = .simple,
+    }
+  });
 
-    tests.root_module.addImport("onnxruntime", mod);
-    const run_tests = b.addRunArtifact(tests);
-    test_step.dependOn(&run_tests.step);
-  }
+  tests.root_module.addImport("onnxruntime", mod);
+  const run_tests = b.addRunArtifact(tests);
+  test_step.dependOn(&run_tests.step);
 }
 
