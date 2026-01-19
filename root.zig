@@ -97,12 +97,16 @@ pub const Utils = struct {
     return switch (@typeInfo(T)) {
       .@"opaque", .@"struct" => T.Underlying,
       .@"enum" => @typeInfo(T).@"enum".tag_type,
-      .pointer => |pi| CopyPointerAttrs(T, if (@typeInfo(pi.child) == .@"opaque") .one else .c, ApiCast(pi.child)),
+      .pointer => |pi| blk: {
+        std.debug.assert(pi.size != .slice);
+        break :blk CopyPointerAttrs(T, if (@typeInfo(pi.child) == .@"opaque") .one else .c, ApiCast(pi.child));
+      },
       .optional => |oi| blk: {
         const casted = ApiCast(oi.child);
         break :blk switch (@typeInfo(casted)) {
           .pointer => |pi| switch (pi.size) {
             .one => ?casted,
+            .slice => unreachable,
             else => casted,
           },
           else => unreachable,
@@ -129,7 +133,10 @@ pub const Utils = struct {
     if (Str == [*:0]const T) return [*c]const T;
     if (Str == [*:0]T) return [*c]T;
     return switch (@typeInfo(Str)) {
-      .pointer => |pi| CopyPointerAttrs(Str, .c, SentinelStrCast(pi.child, T)),
+      .pointer => |pi| blk: {
+        std.debug.assert(pi.size != .slice);
+        break :blk CopyPointerAttrs(Str, .c, SentinelStrCast(pi.child, T));
+      },
       .optional => |oi| SentinelStrCast(oi.child, T), // c pointers are already optional
       else => unreachable,
     };
@@ -147,13 +154,19 @@ pub const Utils = struct {
     }
 
     return switch (@typeInfo(Str)) {
-      .pointer => |pi| switch (@typeInfo(To)) {
-        .pointer => |topi| CopyPointerAttrs(Str, topi.size, SentinelStrCastTo(pi.child, T, topi.child)),
-        .optional => |tooi| ?blk: {
-          const topi = @typeInfo(tooi.child);
-          break :blk CopyPointerAttrs(Str, topi.size, SentinelStrCastTo(pi.child, T, topi.child));
-        },
-        else => unreachable,
+      .pointer => |pi| blk: {
+        std.debug.assert(pi.size != .slice);
+        break :blk switch (@typeInfo(To)) {
+          .pointer => |topi| blk2: {
+            std.debug.assert(topi.size != .slice);
+            break :blk2 CopyPointerAttrs(Str, topi.size, SentinelStrCastTo(pi.child, T, topi.child));
+          },
+          .optional => |tooi| ?blk2: {
+            const topi = @typeInfo(tooi.child);
+            break :blk2 CopyPointerAttrs(Str, topi.size, SentinelStrCastTo(pi.child, T, topi.child));
+          },
+          else => unreachable,
+        };
       },
       else => unreachable,
     };
@@ -178,12 +191,16 @@ pub const Utils = struct {
   fn CCast(comptime T: type) type {
     return switch (@typeInfo(T)) {
       .@"enum" => @typeInfo(T).@"enum".tag_type,
-      .pointer => |pi| CopyPointerAttrs(T, if (@typeInfo(pi.child) == .@"opaque") .one else .c, CCast(pi.child)),
+      .pointer => |pi| blk: {
+        std.debug.assert(pi.size != .slice);
+        break :blk CopyPointerAttrs(T, if (@typeInfo(pi.child) == .@"opaque") .one else .c, CCast(pi.child));
+      },
       .optional => |oi| blk: {
         const casted = CCast(oi.child);
         break :blk switch (@typeInfo(casted)) {
           .pointer => |pi| switch (pi.size) {
             .one => ?casted,
+            .slice => unreachable,
             else => casted,
           },
           else => unreachable,
@@ -196,6 +213,10 @@ pub const Utils = struct {
   pub fn cCast(anyptr: anytype) CCast(@TypeOf(anyptr)) {
     return @ptrCast(anyptr);
   }
+
+  pub const empty_string = [_]u8{0};
+  pub const empty_path = [_]PathChar{0};
+
 };
 
 const apiCast = Utils.apiCast;
@@ -205,6 +226,9 @@ const cStrTo = Utils.cStrTo;
 const pathCast = Utils.pathCast;
 const pathCastTo = Utils.pathCastTo;
 const cCast = Utils.cCast;
+
+const empty_string = Utils.empty_string;
+const empty_path = Utils.empty_path;
 
 /// This is usually used by vendors
 pub const Ep = struct {
@@ -1229,7 +1253,7 @@ pub const Training = struct {
         const ptr: [*]u8 = switch (self) {
           .i64 => @ptrCast(self.i64),
           .f32 => @ptrCast(self.f32),
-          .str => self.str,
+          .str => @ptrCast(self.str),
         };
         allocator.free(ptr);
       }
@@ -3876,7 +3900,7 @@ pub const Node = opaque {
   pub fn getSubgraphs(self: *const @This(), out_graph: []*const Graph, out_attribute_name: []?[*:0]const u8) !void {
     std.debug.assert(out_graph.len == out_attribute_name.len);
     const out_graph_ptr: [*]?*const Graph = @ptrCast(out_graph.ptr);
-    try Error.check(Api.ort.Node_GetSubgraphs.?(apiCast(self), apiCast(out_graph_ptr), out_graph.len, cStr(out_attribute_name)));
+    try Error.check(Api.ort.Node_GetSubgraphs.?(apiCast(self), apiCast(out_graph_ptr), out_graph.len, cStr(out_attribute_name.ptr)));
   }
 
   /// Get the node's parent Graph instance.
@@ -3974,7 +3998,7 @@ pub const Graph = opaque {
     var out: ?Utils.Path = null;
     try Error.check(Api.ort.Graph_GetModelPath.?(apiCast(self), pathCast(&out)));
     // in error case, we return a pointer to a static empty string
-    return out orelse @ptrCast(@constCast(&[_]Utils.PathChar{0}));
+    return out orelse @ptrCast(@constCast(&empty_path));
   }
 
   /// Returns the ONNX IR version.
@@ -4637,7 +4661,7 @@ pub const Session = opaque {
       /// The returned size does NOT include the null terminator.
       pub fn getConfigEntryCount(self: *const C, key: [*:0]const u8) usize {
         var out: usize = 0;
-        self._getConfigEntry(key, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
+        self._getConfigEntry(key, @ptrCast(@constCast(&empty_string)), &out) catch {};
         return if (out > 0) out - 1 else 0;
       }
 
@@ -5408,7 +5432,7 @@ pub const KernelInfo = opaque {
   /// The returned size does NOT include the null terminator.
   pub fn getNodeNameCount(self: *const @This()) !usize {
     var out: usize = 0;
-    self._getNodeName(@ptrCast(@constCast(&[_]u8{0})), &out) catch {};
+    self._getNodeName(@ptrCast(@constCast(&empty_string)), &out) catch {};
     return if (out > 0) out - 1 else 0;
   }
 
@@ -5437,7 +5461,7 @@ pub const KernelInfo = opaque {
   /// The returned size does NOT include the null terminator.
   pub fn getAttributeStringCount(self: *const @This(), name: [*:0]const u8) usize {
     var out: usize = 0;
-    self._getAttributeString(name, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
+    self._getAttributeString(name, @ptrCast(@constCast(&empty_string)), &out) catch {};
     return if (out > 0) out - 1 else 0;
   }
 
@@ -5474,7 +5498,7 @@ pub const KernelInfo = opaque {
   /// The returned size does NOT include the null terminator.
   pub fn getInputNameCount(self: *const @This(), index: usize) !usize {
     var out: usize = 0;
-    self._getInputName(index, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
+    self._getInputName(index, @ptrCast(@constCast(&empty_string)), &out) catch {};
     return if (out > 0) out - 1 else 0;
   }
 
@@ -5494,7 +5518,7 @@ pub const KernelInfo = opaque {
   /// The returned size does NOT include the null terminator.
   pub fn getOutputNameCount(self: *const @This(), index: usize) !usize {
     var out: usize = 0;
-    self._getOutputName(index, @ptrCast(@constCast(&[_]u8{0})), &out) catch {};
+    self._getOutputName(index, @ptrCast(@constCast(&empty_string)), &out) catch {};
     return if (out > 0) out - 1 else 0;
   }
 
