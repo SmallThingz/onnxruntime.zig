@@ -5,7 +5,7 @@ A type-safe, idiomatic, and effectively zero-overhead Zig wrapper for [ONNX Runt
 This library provides a high-level Zig interface to the ONNX Runtime C API, including support for inference, training, the Model Editor, and custom Execution Provider (EP) development.
 
 > [!IMPORTANT]  
-> **Development Status:** Some advanced features of ONNX Runtime may be missing or partially implemented.
+> **Development Status:** Tested on linux onty, if any bugs arise on other platforms, please open an issue, or better yet, a PR.
 
 ## Key Features
 
@@ -116,6 +116,12 @@ try graph.addNode(node);
 try graph.setInputs(&.{val_info_x});
 try graph.setOutputs(&.{val_info_y});
 ```
+
+## Contributing
+
+Contributions are welcome! Feel free to open a bug report or a Pull Request. Just keep the following in mind:
+- **Indentation**: 2 spaces.
+- **Type Safety**: Try to use `apiCast`, `apiCastTo` and other safe casts whenever possible.
 
 ## License
 
