@@ -216,7 +216,6 @@ pub const Utils = struct {
 
   pub const empty_string = [_]u8{0};
   pub const empty_path = [_]PathChar{0};
-
 };
 
 const apiCast = Utils.apiCast;
@@ -740,7 +739,7 @@ pub const Ep = struct {
       /// kernel_context: The OrtKernelContext instance used to access inputs/outputs.
       ///
       /// since Version 1.23.
-      pub fn compute(self: *@This(), state: *State, kernel_context: *KernelContext) !void {
+      pub fn compute(self: *@This(), state: *State, kernel_context: *Op.KernelContext) !void {
         // @ptrCast is needed because State has no underlying type
         try Error.check(self.underlying.Compute.?(apiCast(self), @ptrCast(state), apiCast(kernel_context)));
       }
@@ -1132,6 +1131,7 @@ pub const Ep = struct {
   };
 };
 
+/// Training of models.
 pub const Training = struct {
   pub const api = struct {
     pub var underlying: *const Api.c.OrtTrainingApi = undefined;
@@ -1674,6 +1674,7 @@ pub const Training = struct {
   };
 };
 
+/// The main api struct
 pub const Api = struct {
   /// API docs: https://onnxruntime.ai/docs/api/c/struct_Api.ort.html
   pub const c = @cImport({ @cInclude("onnxruntime/onnxruntime_training_c_api.h"); });
@@ -2068,6 +2069,7 @@ pub const Api = struct {
   }
 };
 
+/// Logging stuff and interface
 pub const Logging = struct {
   /// Levels of logging verbosity, from least severe (verbose) to most severe (fatal).
   pub const Level = enum(Api.c.OrtLoggingLevel) {
@@ -2111,6 +2113,7 @@ pub const Logging = struct {
   };
 };
 
+/// Error handling things
 pub const Error = struct {
   pub const Set = error {
     OrtErrorFail,
@@ -2205,6 +2208,7 @@ pub const Error = struct {
   }
 };
 
+/// Key-Value Pairs, used in a lot of things in this librarym but mainly for options k-v pairs
 pub const KeyValuePairs = opaque {
   pub const Underlying = Api.c.OrtKeyValuePairs;
   /// Wraps OrtApi::CreateKeyValuePairs
@@ -2248,6 +2252,7 @@ pub const KeyValuePairs = opaque {
   }
 };
 
+/// Used for synchronization and async execution / data transfer etc
 pub const SyncStream = opaque {
   pub const Underlying = Api.c.OrtSyncStream;
   /// Wraps OrtApi::CreateSyncStreamForEpDevice
@@ -3734,6 +3739,7 @@ pub const Value = opaque {
   }
 };
 
+/// Represenrs a single mathematical operation. Graph is made from these
 pub const Node = opaque {
   pub const Underlying = Api.c.OrtNode;
   /// Create an OrtNode to add to an OrtGraph.
@@ -3926,6 +3932,7 @@ pub const Node = opaque {
   }
 };
 
+/// Represents directed acyclic graph (DAG) of the model
 pub const Graph = opaque {
   pub const Underlying = Api.c.OrtGraph;
   /// Create an empty OrtGraph.
@@ -4126,6 +4133,7 @@ pub const Graph = opaque {
   }
 };
 
+/// Represents the top-level .onnx file structure
 pub const Model = opaque {
   pub const Underlying = Api.c.OrtModel;
   /// Create an OrtModel.
@@ -4515,6 +4523,7 @@ pub const Model = opaque {
   };
 };
 
+/// Session is usd for running inference on a model.
 pub const Session = opaque {
   pub const Underlying = Api.c.OrtSession;
   /// Graph optimization level
@@ -5180,6 +5189,7 @@ pub const Session = opaque {
   }
 };
 
+/// These are used when creating a Session to dectate it's behavior.
 pub const RunOptions = opaque {
   pub const Underlying = Api.c.OrtRunOptions;
   pub fn init() !*@This() {
@@ -5274,6 +5284,7 @@ pub const RunOptions = opaque {
   }
 };
 
+/// Useful for zero-copy inference (better performance)
 pub const IoBinding = opaque {
   pub const Underlying = Api.c.OrtIoBinding;
   pub fn init(session: *Session) !*@This() {
@@ -5347,300 +5358,6 @@ pub const IoBinding = opaque {
   }
 };
 
-pub const KernelContext = opaque {
-  pub const Underlying = Api.c.OrtKernelContext;
-  pub fn getInputCount(self: *const @This()) !usize {
-    var out: usize = 0;
-    try Error.check(Api.ort.KernelContext_GetInputCount.?(apiCast(self), &out));
-    return out;
-  }
-
-  pub fn getOutputCount(self: *const @This()) !usize {
-    var out: usize = 0;
-    try Error.check(Api.ort.KernelContext_GetOutputCount.?(apiCast(self), &out));
-    return out;
-  }
-
-  pub fn getInput(self: *const @This(), index: usize) !?*const Value {
-    var out: ?*const Value = null;
-    try Error.check(Api.ort.KernelContext_GetInput.?(apiCast(self), index, apiCast(&out)));
-    return out;
-  }
-
-  /// DO NOT FREE THE RETURNED VALUE
-  pub fn getOutput(self: *@This(), index: usize, dims: []const i64) !?*Value {
-    var out: ?*Value = null;
-    try Error.check(Api.ort.KernelContext_GetOutput.?(apiCast(self), index, dims.ptr, dims.len, apiCast(&out)));
-    return out;
-  }
-
-  pub fn getGpuComputeStream(self: *const @This()) !?*anyopaque {
-    var out: ?*anyopaque = null;
-    try Error.check(Api.ort.KernelContext_GetGPUComputeStream.?(apiCast(self), &out));
-    return out;
-  }
-  
-  pub fn getResource(self: *const @This(), version: c_int, id: c_int) !?*anyopaque {
-    var out: ?*anyopaque = null;
-    try Error.check(Api.ort.KernelContext_GetResource.?(apiCast(self), version, id, &out));
-    return out;
-  }
-  
-  pub fn getScratchBuffer(self: *const @This(), mem_info: *const Allocator.MemoryInfo, size: usize) !?*anyopaque {
-    var out: ?*anyopaque = null;
-    try Error.check(Api.ort.KernelContext_GetScratchBuffer.?(apiCast(self), apiCast(mem_info), size, &out));
-    return out;
-  }
-  
-  pub fn getAllocator(self: *const @This(), mem_info: *const Allocator.MemoryInfo) !*Allocator {
-    var out: ?*Allocator = null;
-    try Error.check(Api.ort.KernelContext_GetAllocator.?(apiCast(self), apiCast(mem_info), apiCast(&out)));
-    return out orelse error.OutOfMemory;
-  }
-
-  /// Get the runtime logger.
-  pub fn getLogger(self: *const @This()) !*const KernelInfo.Logger {
-    var out: ?*const KernelInfo.Logger = null;
-    try Error.check(Api.ort.KernelContext_GetLogger.?(apiCast(self), apiCast(&out)));
-    return out.?;
-  }
-
-  /// Run a function in parallel.
-  pub fn parallelFor(
-    self: *const @This(), 
-    task: fn(*anyopaque, usize) callconv(.c) void, 
-    total: usize, 
-    num_batch: usize, 
-    user_data: ?*anyopaque
-  ) !void {
-    try Error.check(Api.ort.KernelContext_ParallelFor.?(apiCast(self), task, total, num_batch, user_data));
-  }
-};
-
-pub const KernelInfo = opaque {
-  pub const Underlying = Api.c.OrtKernelInfo;
-  pub fn copy(self: *const @This()) !*@This() {
-    var out: ?*@This() = null;
-    try Error.check(Api.ort.CopyKernelInfo.?(apiCast(self), apiCast(&out)));
-    return out orelse error.OutOfMemory;
-  }
-
-  pub fn _getNodeName(self: *const @This(), out_ptr: [*:0]u8, out_size: *usize) !void {
-    try Error.check(Api.ort.KernelInfo_GetNodeName.?(apiCast(self), cStr(out_ptr), out_size));
-  }
-
-  /// The returned size does NOT include the null terminator.
-  pub fn getNodeNameCount(self: *const @This()) !usize {
-    var out: usize = 0;
-    self._getNodeName(@ptrCast(@constCast(&empty_string)), &out) catch {};
-    return if (out > 0) out - 1 else 0;
-  }
-
-  pub fn getNodeName(self: *const @This(), out: [:0]u8) !void {
-    var size: usize = out.len + 1;
-    try self._getNodeName(out.ptr, &size);
-    std.debug.assert(out.len + 1 == size);
-  }
-  
-  pub fn getAttributeFloat(self: *const @This(), name: [*:0]const u8) !f32 {
-    var out: f32 = 0;
-    try Error.check(Api.ort.KernelInfoGetAttribute_float.?(apiCast(self), cStr(name), &out));
-    return out;
-  }
-  
-  pub fn getAttributeInt(self: *const @This(), name: [*:0]const u8) !i64 {
-    var out: i64 = 0;
-    try Error.check(Api.ort.KernelInfoGetAttribute_int64.?(apiCast(self), cStr(name), &out));
-    return out;
-  }
-  
-  pub fn _getAttributeString(self: *const @This(), name: [*:0]const u8, out_ptr: [*:0]u8, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttribute_string.?(apiCast(self), cStr(name), cStr(out_ptr), out_len));
-  }
-
-  /// The returned size does NOT include the null terminator.
-  pub fn getAttributeStringCount(self: *const @This(), name: [*:0]const u8) usize {
-    var out: usize = 0;
-    self._getAttributeString(name, @ptrCast(@constCast(&empty_string)), &out) catch {};
-    return if (out > 0) out - 1 else 0;
-  }
-
-  pub fn getAttributeString(self: *const @This(), name: [*:0]const u8, out: [:0]u8) !void {
-    var size: usize = out.len + 1;
-    try self._getAttributeString(cStr(name), cStr(out.ptr), &size);
-    std.debug.assert(out.len + 1 == size);
-  }
-  
-  pub fn getAttributeTensor(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
-    var out: ?*Value = null;
-    try Error.check(Api.ort.KernelInfoGetAttribute_tensor.?(apiCast(self), cStr(name), apiCast(allocator), apiCast(&out)));
-    return out orelse error.OutOfMemory;
-  }
-
-  /// Get the number of inputs.
-  pub fn getInputCount(self: *const @This()) !usize {
-    var out: usize = 0;
-    try Error.check(Api.ort.KernelInfo_GetInputCount.?(apiCast(self), &out));
-    return out;
-  }
-
-  /// Get the number of outputs.
-  pub fn getOutputCount(self: *const @This()) !usize {
-    var out: usize = 0;
-    try Error.check(Api.ort.KernelInfo_GetOutputCount.?(apiCast(self), &out));
-    return out;
-  }
-
-  pub fn _getInputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfo_GetInputName.?(apiCast(self), index, cStr(out_ptr), out_len));
-  }
-
-  /// The returned size does NOT include the null terminator.
-  pub fn getInputNameCount(self: *const @This(), index: usize) !usize {
-    var out: usize = 0;
-    self._getInputName(index, @ptrCast(@constCast(&empty_string)), &out) catch {};
-    return if (out > 0) out - 1 else 0;
-  }
-
-  /// Get the name of an input.
-  /// allocator: The allocator used to allocate the returned string buffer.
-  /// Returns a null-terminated string.
-  pub fn getInputName(self: *const @This(), index: usize, out: [:0]u8) !void {
-    var size: usize = out.len + 1;
-    try self._getInputName(index, cStr(out.ptr), &size);
-    std.debug.assert(out.len + 1 == size);
-  }
-
-  pub fn _getOutputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfo_GetOutputName.?(apiCast(self), index, cStr(out_ptr), out_len));
-  }
-
-  /// The returned size does NOT include the null terminator.
-  pub fn getOutputNameCount(self: *const @This(), index: usize) !usize {
-    var out: usize = 0;
-    self._getOutputName(index, @ptrCast(@constCast(&empty_string)), &out) catch {};
-    return if (out > 0) out - 1 else 0;
-  }
-
-  /// Get the name of an output.
-  /// allocator: The allocator used to allocate the returned string buffer.
-  /// Returns a null-terminated string.
-  pub fn getOutputName(self: *const @This(), index: usize, out: [:0]u8) !void {
-    var size: usize = out.len + 1;
-    try self._getOutputName(index, cStr(out.ptr), &size);
-    std.debug.assert(out.len + 1 == size);
-  }
-
-  /// Get the type information for an input.
-  /// The returned TypeInfo must be deinitialized by the caller.
-  pub fn getInputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
-    var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.KernelInfo_GetInputTypeInfo.?(apiCast(self), index, apiCast(&out)));
-    return out orelse error.OutOfMemory;
-  }
-
-  /// Get the type information for an output.
-  /// The returned TypeInfo must be deinitialized by the caller.
-  pub fn getOutputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
-    var out: ?*TypeInfo = null;
-    try Error.check(Api.ort.KernelInfo_GetOutputTypeInfo.?(apiCast(self), index, apiCast(&out)));
-    return out orelse error.OutOfMemory;
-  }
-
-  pub fn _getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out_ptr: [*]f32, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttributeArray_float.?(apiCast(self), cStr(name), out_ptr, out_len));
-  }
-
-  pub fn getAttributeArrayFloatCount(self: *const @This(), name: [*:0]const u8) !usize {
-    var out: usize = 0;
-    self._getAttributeArrayFloat(cStr(name), @ptrCast(@constCast(&[_]f32{})), &out) catch {};
-    return out;
-  }
-
-  /// Fetch a float array stored as an attribute.
-  /// allocator: The allocator used to create the slice to hold the result.
-  pub fn getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out: []f32) !void {
-    var size: usize = out.len;
-    try self._getAttributeArrayFloat(cStr(name), out.ptr, &size);
-    std.debug.assert(out.len == size);
-  }
-
-  pub fn _getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out_ptr: [*]i64, out_len: *usize) !void {
-    try Error.check(Api.ort.KernelInfoGetAttributeArray_int64.?(apiCast(self), cStr(name), cCast(out_ptr), out_len));
-  }
-
-  pub fn getAttributeArrayIntCount(self: *const @This(), name: [*:0]const u8) !usize {
-    var out: usize = 0;
-    self._getAttributeArrayInt(cStr(name), @ptrCast(@constCast(&[_]i64{})), &out) catch {};
-    return out;
-  }
-
-  /// Fetch an int64 array stored as an attribute.
-  /// allocator: The allocator used to create the slice to hold the result.
-  pub fn getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out: []i64) !void {
-    var size: usize = 0;
-    try self._getAttributeArrayInt(cStr(name), out.ptr, &size);
-    std.debug.assert(out.len == size);
-  }
-
-  /// Get allocator from KernelInfo for a specific memory type. 
-  /// Please use `Allocator.deinit` (C API ReleaseAllocator) to release the returned object.
-  pub fn getAllocator(self: *const @This(), mem_type: Allocator.MemoryType) !*Allocator {
-    var out: ?*Allocator = null;
-    try Error.check(Api.ort.KernelInfoGetAllocator.?(apiCast(self), @intFromEnum(mem_type), apiCast(&out)));
-    return out orelse error.OutOfMemory;
-  }
-
-  pub const Logger = opaque {
-    pub const Underlying = Api.c.OrtLogger;
-    /// Log a message.
-    pub fn logMessage(
-      self: *const @This(), 
-      severity: Logging.Level, 
-      message: [*:0]const u8, 
-      file: Utils.Path, 
-      line: c_int, 
-      func: [*:0]const u8
-    ) !void {
-      try Error.check(Api.ort.Logger_LogMessage.?(
-          apiCast(self), 
-          @intFromEnum(severity), 
-          message, 
-          pathCast(file), 
-          line, 
-          func
-      ));
-    }
-
-    /// Get the logging severity level.
-    pub fn getSeverityLevel(self: *const @This()) !Logging.Level {
-      var out: Api.c.OrtLoggingLevel = undefined;
-      try Error.check(Api.ort.Logger_GetLoggingSeverityLevel.?(apiCast(self), &out));
-      return @enumFromInt(out);
-    }
-  };
-
-  pub fn getLogger(self: *const @This()) !*const Logger {
-    var out: ?*const Logger = null;
-    try Error.check(Api.ort.KernelInfo_GetLogger.?(apiCast(self), apiCast(&out)));
-    return out.?;
-  }
-
-  /// Get a constant input tensor.
-  /// is_constant: Output bool indicating if it is constant.
-  pub fn getConstantInputTensor(self: *const @This(), index: usize, is_constant: *bool) !?*const Value {
-    var out: ?*const Value = null;
-    var is_const_c: c_int = 0;
-    try Error.check(Api.ort.KernelInfoGetConstantInput_tensor.?(apiCast(self), index, &is_const_c, apiCast(&out)));
-    is_constant.* = (is_const_c != 0);
-    return out;
-  }
-
-  pub fn deinit(self: *@This()) void {
-    Api.ort.ReleaseKernelInfo.?(apiCast(self));
-  }
-};
-
 /// Represents a physical hardware device (CPU, GPU, NPU) available on the system.
 /// This is an opaque type managed by ORT.
 pub const HardwareDevice = opaque {
@@ -5688,6 +5405,303 @@ pub const HardwareDevice = opaque {
 
 pub const Op = opaque {
   pub const Underlying = Api.c.OrtOp;
+
+  /// computeV2 function receives this context
+  pub const KernelContext = opaque {
+    pub const Underlying = Api.c.OrtKernelContext;
+    pub fn getInputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(Api.ort.KernelContext_GetInputCount.?(apiCast(self), &out));
+      return out;
+    }
+
+    pub fn getOutputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(Api.ort.KernelContext_GetOutputCount.?(apiCast(self), &out));
+      return out;
+    }
+
+    pub fn getInput(self: *const @This(), index: usize) !?*const Value {
+      var out: ?*const Value = null;
+      try Error.check(Api.ort.KernelContext_GetInput.?(apiCast(self), index, apiCast(&out)));
+      return out;
+    }
+
+    /// DO NOT FREE THE RETURNED VALUE
+    pub fn getOutput(self: *@This(), index: usize, dims: []const i64) !?*Value {
+      var out: ?*Value = null;
+      try Error.check(Api.ort.KernelContext_GetOutput.?(apiCast(self), index, dims.ptr, dims.len, apiCast(&out)));
+      return out;
+    }
+
+    pub fn getGpuComputeStream(self: *const @This()) !?*anyopaque {
+      var out: ?*anyopaque = null;
+      try Error.check(Api.ort.KernelContext_GetGPUComputeStream.?(apiCast(self), &out));
+      return out;
+    }
+    
+    pub fn getResource(self: *const @This(), version: c_int, id: c_int) !?*anyopaque {
+      var out: ?*anyopaque = null;
+      try Error.check(Api.ort.KernelContext_GetResource.?(apiCast(self), version, id, &out));
+      return out;
+    }
+    
+    pub fn getScratchBuffer(self: *const @This(), mem_info: *const Allocator.MemoryInfo, size: usize) !?*anyopaque {
+      var out: ?*anyopaque = null;
+      try Error.check(Api.ort.KernelContext_GetScratchBuffer.?(apiCast(self), apiCast(mem_info), size, &out));
+      return out;
+    }
+    
+    pub fn getAllocator(self: *const @This(), mem_info: *const Allocator.MemoryInfo) !*Allocator {
+      var out: ?*Allocator = null;
+      try Error.check(Api.ort.KernelContext_GetAllocator.?(apiCast(self), apiCast(mem_info), apiCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Get the runtime logger.
+    pub fn getLogger(self: *const @This()) !*const KernelInfo.Logger {
+      var out: ?*const KernelInfo.Logger = null;
+      try Error.check(Api.ort.KernelContext_GetLogger.?(apiCast(self), apiCast(&out)));
+      return out.?;
+    }
+
+    /// Run a function in parallel.
+    pub fn parallelFor(
+      self: *const @This(), 
+      task: fn(*anyopaque, usize) callconv(.c) void, 
+      total: usize, 
+      num_batch: usize, 
+      user_data: ?*anyopaque
+    ) !void {
+      try Error.check(Api.ort.KernelContext_ParallelFor.?(apiCast(self), task, total, num_batch, user_data));
+    }
+  };
+
+  /// context for Initialization phase of a custom operator
+  pub const KernelInfo = opaque {
+    pub const Underlying = Api.c.OrtKernelInfo;
+    pub fn copy(self: *const @This()) !*@This() {
+      var out: ?*@This() = null;
+      try Error.check(Api.ort.CopyKernelInfo.?(apiCast(self), apiCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    pub fn _getNodeName(self: *const @This(), out_ptr: [*:0]u8, out_size: *usize) !void {
+      try Error.check(Api.ort.KernelInfo_GetNodeName.?(apiCast(self), cStr(out_ptr), out_size));
+    }
+
+    /// The returned size does NOT include the null terminator.
+    pub fn getNodeNameCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      self._getNodeName(@ptrCast(@constCast(&empty_string)), &out) catch {};
+      return if (out > 0) out - 1 else 0;
+    }
+
+    pub fn getNodeName(self: *const @This(), out: [:0]u8) !void {
+      var size: usize = out.len + 1;
+      try self._getNodeName(out.ptr, &size);
+      std.debug.assert(out.len + 1 == size);
+    }
+    
+    pub fn getAttributeFloat(self: *const @This(), name: [*:0]const u8) !f32 {
+      var out: f32 = 0;
+      try Error.check(Api.ort.KernelInfoGetAttribute_float.?(apiCast(self), cStr(name), &out));
+      return out;
+    }
+    
+    pub fn getAttributeInt(self: *const @This(), name: [*:0]const u8) !i64 {
+      var out: i64 = 0;
+      try Error.check(Api.ort.KernelInfoGetAttribute_int64.?(apiCast(self), cStr(name), &out));
+      return out;
+    }
+    
+    pub fn _getAttributeString(self: *const @This(), name: [*:0]const u8, out_ptr: [*:0]u8, out_len: *usize) !void {
+      try Error.check(Api.ort.KernelInfoGetAttribute_string.?(apiCast(self), cStr(name), cStr(out_ptr), out_len));
+    }
+
+    /// The returned size does NOT include the null terminator.
+    pub fn getAttributeStringCount(self: *const @This(), name: [*:0]const u8) usize {
+      var out: usize = 0;
+      self._getAttributeString(name, @ptrCast(@constCast(&empty_string)), &out) catch {};
+      return if (out > 0) out - 1 else 0;
+    }
+
+    pub fn getAttributeString(self: *const @This(), name: [*:0]const u8, out: [:0]u8) !void {
+      var size: usize = out.len + 1;
+      try self._getAttributeString(cStr(name), cStr(out.ptr), &size);
+      std.debug.assert(out.len + 1 == size);
+    }
+    
+    pub fn getAttributeTensor(self: *const @This(), name: [*:0]const u8, allocator: *Allocator) !*Value {
+      var out: ?*Value = null;
+      try Error.check(Api.ort.KernelInfoGetAttribute_tensor.?(apiCast(self), cStr(name), apiCast(allocator), apiCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Get the number of inputs.
+    pub fn getInputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(Api.ort.KernelInfo_GetInputCount.?(apiCast(self), &out));
+      return out;
+    }
+
+    /// Get the number of outputs.
+    pub fn getOutputCount(self: *const @This()) !usize {
+      var out: usize = 0;
+      try Error.check(Api.ort.KernelInfo_GetOutputCount.?(apiCast(self), &out));
+      return out;
+    }
+
+    pub fn _getInputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
+      try Error.check(Api.ort.KernelInfo_GetInputName.?(apiCast(self), index, cStr(out_ptr), out_len));
+    }
+
+    /// The returned size does NOT include the null terminator.
+    pub fn getInputNameCount(self: *const @This(), index: usize) !usize {
+      var out: usize = 0;
+      self._getInputName(index, @ptrCast(@constCast(&empty_string)), &out) catch {};
+      return if (out > 0) out - 1 else 0;
+    }
+
+    /// Get the name of an input.
+    /// allocator: The allocator used to allocate the returned string buffer.
+    /// Returns a null-terminated string.
+    pub fn getInputName(self: *const @This(), index: usize, out: [:0]u8) !void {
+      var size: usize = out.len + 1;
+      try self._getInputName(index, cStr(out.ptr), &size);
+      std.debug.assert(out.len + 1 == size);
+    }
+
+    pub fn _getOutputName(self: *const @This(), index: usize, out_ptr: [*:0]u8, out_len: *usize) !void {
+      try Error.check(Api.ort.KernelInfo_GetOutputName.?(apiCast(self), index, cStr(out_ptr), out_len));
+    }
+
+    /// The returned size does NOT include the null terminator.
+    pub fn getOutputNameCount(self: *const @This(), index: usize) !usize {
+      var out: usize = 0;
+      self._getOutputName(index, @ptrCast(@constCast(&empty_string)), &out) catch {};
+      return if (out > 0) out - 1 else 0;
+    }
+
+    /// Get the name of an output.
+    /// allocator: The allocator used to allocate the returned string buffer.
+    /// Returns a null-terminated string.
+    pub fn getOutputName(self: *const @This(), index: usize, out: [:0]u8) !void {
+      var size: usize = out.len + 1;
+      try self._getOutputName(index, cStr(out.ptr), &size);
+      std.debug.assert(out.len + 1 == size);
+    }
+
+    /// Get the type information for an input.
+    /// The returned TypeInfo must be deinitialized by the caller.
+    pub fn getInputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
+      var out: ?*TypeInfo = null;
+      try Error.check(Api.ort.KernelInfo_GetInputTypeInfo.?(apiCast(self), index, apiCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    /// Get the type information for an output.
+    /// The returned TypeInfo must be deinitialized by the caller.
+    pub fn getOutputTypeInfo(self: *const @This(), index: usize) !*TypeInfo {
+      var out: ?*TypeInfo = null;
+      try Error.check(Api.ort.KernelInfo_GetOutputTypeInfo.?(apiCast(self), index, apiCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    pub fn _getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out_ptr: [*]f32, out_len: *usize) !void {
+      try Error.check(Api.ort.KernelInfoGetAttributeArray_float.?(apiCast(self), cStr(name), out_ptr, out_len));
+    }
+
+    pub fn getAttributeArrayFloatCount(self: *const @This(), name: [*:0]const u8) !usize {
+      var out: usize = 0;
+      self._getAttributeArrayFloat(cStr(name), @ptrCast(@constCast(&[_]f32{})), &out) catch {};
+      return out;
+    }
+
+    /// Fetch a float array stored as an attribute.
+    /// allocator: The allocator used to create the slice to hold the result.
+    pub fn getAttributeArrayFloat(self: *const @This(), name: [*:0]const u8, out: []f32) !void {
+      var size: usize = out.len;
+      try self._getAttributeArrayFloat(cStr(name), out.ptr, &size);
+      std.debug.assert(out.len == size);
+    }
+
+    pub fn _getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out_ptr: [*]i64, out_len: *usize) !void {
+      try Error.check(Api.ort.KernelInfoGetAttributeArray_int64.?(apiCast(self), cStr(name), cCast(out_ptr), out_len));
+    }
+
+    pub fn getAttributeArrayIntCount(self: *const @This(), name: [*:0]const u8) !usize {
+      var out: usize = 0;
+      self._getAttributeArrayInt(cStr(name), @ptrCast(@constCast(&[_]i64{})), &out) catch {};
+      return out;
+    }
+
+    /// Fetch an int64 array stored as an attribute.
+    /// allocator: The allocator used to create the slice to hold the result.
+    pub fn getAttributeArrayInt(self: *const @This(), name: [*:0]const u8, out: []i64) !void {
+      var size: usize = 0;
+      try self._getAttributeArrayInt(cStr(name), out.ptr, &size);
+      std.debug.assert(out.len == size);
+    }
+
+    /// Get allocator from KernelInfo for a specific memory type. 
+    /// Please use `Allocator.deinit` (C API ReleaseAllocator) to release the returned object.
+    pub fn getAllocator(self: *const @This(), mem_type: Allocator.MemoryType) !*Allocator {
+      var out: ?*Allocator = null;
+      try Error.check(Api.ort.KernelInfoGetAllocator.?(apiCast(self), @intFromEnum(mem_type), apiCast(&out)));
+      return out orelse error.OutOfMemory;
+    }
+
+    pub const Logger = opaque {
+      pub const Underlying = Api.c.OrtLogger;
+      /// Log a message.
+      pub fn logMessage(
+        self: *const @This(), 
+        severity: Logging.Level, 
+        message: [*:0]const u8, 
+        file: Utils.Path, 
+        line: c_int, 
+        func: [*:0]const u8
+      ) !void {
+        try Error.check(Api.ort.Logger_LogMessage.?(
+            apiCast(self), 
+            @intFromEnum(severity), 
+            message, 
+            pathCast(file), 
+            line, 
+            func
+        ));
+      }
+
+      /// Get the logging severity level.
+      pub fn getSeverityLevel(self: *const @This()) !Logging.Level {
+        var out: Api.c.OrtLoggingLevel = undefined;
+        try Error.check(Api.ort.Logger_GetLoggingSeverityLevel.?(apiCast(self), &out));
+        return @enumFromInt(out);
+      }
+    };
+
+    pub fn getLogger(self: *const @This()) !*const Logger {
+      var out: ?*const Logger = null;
+      try Error.check(Api.ort.KernelInfo_GetLogger.?(apiCast(self), apiCast(&out)));
+      return out.?;
+    }
+
+    /// Get a constant input tensor.
+    /// is_constant: Output bool indicating if it is constant.
+    pub fn getConstantInputTensor(self: *const @This(), index: usize, is_constant: *bool) !?*const Value {
+      var out: ?*const Value = null;
+      var is_const_c: c_int = 0;
+      try Error.check(Api.ort.KernelInfoGetConstantInput_tensor.?(apiCast(self), index, &is_const_c, apiCast(&out)));
+      is_constant.* = (is_const_c != 0);
+      return out;
+    }
+
+    pub fn deinit(self: *@This()) void {
+      Api.ort.ReleaseKernelInfo.?(apiCast(self));
+    }
+  };
+
   /// Create onnxruntime native operator.
   pub fn init(
     info: *const KernelInfo,
