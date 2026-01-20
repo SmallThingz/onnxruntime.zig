@@ -2144,7 +2144,7 @@ pub const Api = struct {
   pub fn getAvailableProviders() !Providers {
     var ptrs: ?[*][*:0]u8 = null;
     var len: c_int = 0;
-    try Error.check(Api.ort.GetAvailableProviders.?(&ptrs, &len));
+    try Error.check(Api.ort.GetAvailableProviders.?(cStr(&ptrs), &len));
     if (len < 0) return error.InvalidLength;
     return .{ .providers = (ptrs orelse return error.OutOfMemory)[0 .. @intCast(len)] };
   }
