@@ -1043,7 +1043,7 @@ fn initType(comptime T: type) T {
     .int => return 0,
     .float => return 0.0,
     .pointer => return @alignCast(@ptrCast(@constCast(&.{}))),
-    .array => |ai| inline for (ai.len) |i| {@field(retval, i) = initType(ai.child);},
+    .array => |ai| inline for (0..ai.len) |i| {retval[i] = initType(ai.child);},
     .@"struct" => |si| inline for (si.fields) |field| {@field(retval, field.name) = comptime initType(@FieldType(T, field.name));},
     .comptime_float => return 0.0,
     .comptime_int => return 0,
@@ -1220,6 +1220,8 @@ fn HashMap(is_const: bool) type {
   };
 }
 
+/// These function are called somewhere in the tests
+/// TODO: make this better; could mpve this to test runner to make it cleaner
 const skipFunctions = HashMap(false).initSlice(&[_][]const u8{
   "root.Logging.Interface.fromContext",
   "root.Model.CompilationOptions.WriteInterface.fromContext",
