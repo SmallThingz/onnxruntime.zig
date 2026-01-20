@@ -24,8 +24,8 @@ pub fn build(b: *std.Build) !void {
   addTestStep(b, mod, target, optimize) catch {}; // |err| std.log.warn("Failed to add test step, error: {}", .{err});
 }
 
-fn exists(path: []const u8) bool {
-  std.fs.cwd().access(path, .{}) catch return false;
+fn exists(io: std.Io, path: []const u8) bool {
+  std.Io.Dir.cwd().access(io, path, .{}) catch return false;
   return true;
 }
 
@@ -35,8 +35,8 @@ fn addTestStep(b: *std.Build, mod: *std.Build.Module, target: std.Build.Resolved
   const test_runner_name = "test_runner.zig";
 
   // we don't care about time-of-check time-of-use race conditions as this is a simple test runner
-  if (!exists(test_file_name)) return error.MissingTestFile;
-  if (!exists(test_runner_name)) return error.MissingTestRunner;
+  if (!exists(b.graph.io, test_file_name)) return error.MissingTestFile;
+  if (!exists(b.graph.io, test_runner_name)) return error.MissingTestRunner;
 
   const tests = b.addTest(.{
     .root_module = b.createModule(.{

@@ -80,18 +80,18 @@ pub const Utils = struct {
       @compileError(std.fmt.comptimePrint("From: {s}; size: {any}; To: {s}", .{@typeName(From), size, @typeName(To)}));
     }
     const info = @typeInfo(From).pointer;
-    return @Type(.{
-      .pointer = .{
-        .size = size,
-        .is_const = info.is_const,
-        .is_volatile = info.is_volatile,
-        .is_allowzero = info.is_allowzero,
-        .alignment = info.alignment,
-        .address_space = info.address_space,
-        .child = To,
-        .sentinel_ptr = null,
+    return @Pointer(
+      size,
+      .{
+        .@"const" = info.is_const,
+        .@"volatile" = info.is_volatile,
+        .@"allowzero" = info.is_allowzero,
+        .@"addrspace" = info.address_space,
+        .@"align" = info.alignment,
       },
-    });
+      To,
+      null,
+    );
   }
 
   fn ApiCast(comptime T: type) type {
@@ -2144,7 +2144,7 @@ pub const Api = struct {
   pub fn getAvailableProviders() !Providers {
     var ptrs: ?[*][*:0]u8 = null;
     var len: c_int = 0;
-    try Error.check(Api.ort.GetAvailableProviders.?(&ptrs, &len));
+    try Error.check(Api.ort.GetAvailableProviders.?(cStr(&ptrs), &len));
     if (len < 0) return error.InvalidLength;
     return .{ .providers = (ptrs orelse return error.OutOfMemory)[0 .. @intCast(len)] };
   }
@@ -2338,7 +2338,7 @@ pub const Error = struct {
           if (ec == @intFromEnum(Error.Code.Ok)) return;
           const name = "OrtError" ++ @tagName(@as(Error.Code, @enumFromInt(ec)));
           // this is cursed i know. If you know of a cleaner way to create an error from string, please open a PR asap
-          return @field(@Type(.{.error_set = &[_]std.builtin.Type.Error{.{.name = name}}}), name);
+          return @field(Set, name);
         },
         else => Set.OrtErrorUnknown,
       };

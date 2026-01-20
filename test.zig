@@ -1022,14 +1022,7 @@ fn ArgsTuple(comptime Function: type) ?type {
     };
   }
 
-  return @Type(.{
-    .@"struct" = .{
-      .is_tuple = true,
-      .layout = .auto,
-      .decls = &.{},
-      .fields = &tuple_fields,
-    },
-  });
+  return @Tuple(&argument_field_list);
 }
 
 fn initType(comptime T: type) T {

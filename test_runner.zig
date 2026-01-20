@@ -34,7 +34,7 @@ pub fn main() !void {
         skipped += 1;
       } else {
         std.debug.print("{s} => FAILED ({s})\n", .{test_fn.name, @errorName(err)});
-        std.debug.dumpStackTrace(@errorReturnTrace().?.*);
+        std.debug.dumpStackTrace(@errorReturnTrace().?);
         failed += 1;
       }
     }
