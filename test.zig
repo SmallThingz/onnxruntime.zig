@@ -1087,7 +1087,6 @@ fn refAllDeclsRecursiveExcerptC(comptime T: type) void {
           _ = &@call(.auto, field, comptime initType(Args));
         } else comptime {
           const name = std.fmt.comptimePrint("{s}.{s}", .{@typeName(T), decl.name});
-          // if (skipFunctions.get(name)) @compileError(std.fmt.comptimePrint("Skipping {s}: {s}\n", .{name, @typeName(@TypeOf(field))}));
           if (!skipFunctions.get(name)) @compileError(std.fmt.comptimePrint("Can't call {s}: {s}\n", .{name, @typeName(@TypeOf(field))}));
         }
       }
