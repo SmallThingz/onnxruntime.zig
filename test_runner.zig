@@ -25,15 +25,16 @@ pub fn main() !void {
   var skipped: usize = 0;
 
   for (test_fns) |test_fn| {
+    std.debug.print("{s} ", .{test_fn.name});
     if (test_fn.func()) |_| {
-      std.debug.print("{s} => OK\n", .{test_fn.name});
+      std.debug.print("=> OK\n", .{});
       passed += 1;
     } else |err| {
       if (err == error.SkipZigTest) {
-        std.debug.print("{s} => SKIPPED\n", .{test_fn.name});
+        std.debug.print("=> SKIPPED\n", .{});
         skipped += 1;
       } else {
-        std.debug.print("{s} => FAILED ({s})\n", .{test_fn.name, @errorName(err)});
+        std.debug.print("=> FAILED ({s})\n", .{@errorName(err)});
         std.debug.dumpStackTrace(@errorReturnTrace().?);
         failed += 1;
       }

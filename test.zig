@@ -518,10 +518,10 @@ pub const Op_tests = struct {
     try testing.expectEqual(@as(usize, 1), vt.GetInputTypeCount.?(c_op));
     
     var kernel: ?*anyopaque = null;
-    try onnx.Error.check(vt.CreateKernelV2.?(c_op, undefined, undefined, &kernel));
+    try onnx.Error.check(vt.CreateKernelV2.?(c_op, @ptrFromInt(0xdeadbeef0), @ptrFromInt(0xdeadbeef0), &kernel));
     
     routing_check = false;
-    try onnx.Error.check(vt.KernelComputeV2.?(kernel, undefined));
+    try onnx.Error.check(vt.KernelComputeV2.?(kernel, @ptrFromInt(0xdeadbeef0)));
     try testing.expect(routing_check);
   }
 
