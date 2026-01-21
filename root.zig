@@ -2109,7 +2109,7 @@ pub const Api = struct {
     Api.env.deinit();
 
     // Releasing the static oom error status
-    Error.Status.oom.deinit();
+    if (!Error.Status.released) Error.Status.oom.deinit();
   }
 
   /// Returns a null terminated string of the build info including git info and cxx flags.
