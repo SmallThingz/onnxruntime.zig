@@ -518,10 +518,10 @@ pub const Op_tests = struct {
     try testing.expectEqual(@as(usize, 1), vt.GetInputTypeCount.?(c_op));
     
     var kernel: ?*anyopaque = null;
-    try onnx.Error.check(vt.CreateKernelV2.?(c_op, undefined, undefined, &kernel));
+    try onnx.Error.check(vt.CreateKernelV2.?(c_op, @ptrFromInt(0xdeadbeef0), @ptrFromInt(0xdeadbeef0), &kernel));
     
     routing_check = false;
-    try onnx.Error.check(vt.KernelComputeV2.?(kernel, undefined));
+    try onnx.Error.check(vt.KernelComputeV2.?(kernel, @ptrFromInt(0xdeadbeef0)));
     try testing.expect(routing_check);
   }
 
@@ -1009,27 +1009,7 @@ fn ArgsTuple(comptime Function: type) ?type {
     argument_field_list[i] = T;
   }
 
-  var tuple_fields: [argument_field_list.len]std.builtin.Type.StructField = undefined;
-  inline for (argument_field_list, 0..) |T, i| {
-    @setEvalBranchQuota(10_000);
-    var num_buf: [128]u8 = undefined;
-    tuple_fields[i] = .{
-      .name = std.fmt.bufPrintZ(&num_buf, "{d}", .{i}) catch unreachable,
-      .type = T,
-      .default_value_ptr = null,
-      .is_comptime = false,
-      .alignment = @alignOf(T),
-    };
-  }
-
-  return @Type(.{
-    .@"struct" = .{
-      .is_tuple = true,
-      .layout = .auto,
-      .decls = &.{},
-      .fields = &tuple_fields,
-    },
-  });
+  return std.meta.Tuple(&argument_field_list);
 }
 
 fn initType(comptime T: type) T {

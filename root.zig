@@ -1883,10 +1883,10 @@ pub const Api = struct {
 
     /// Wraps OrtApi::GetEpDevices
     pub fn getEpDevices() ![]const *const Ep.Device {
-      var retval_ptr: ?[*]const *const Ep.Device = null;
+      var retval_ptr: ?[*]const ?*const Ep.Device = null;
       var retval_len: usize = 0;
       try Error.check(ort.GetEpDevices.?(underlying, apiCast(&retval_ptr), &retval_len));
-      return (retval_ptr orelse return error.OutOfMemory)[0 .. retval_len];
+      return (@as([*]const *const Ep.Device, @ptrCast(retval_ptr orelse return error.OutOfMemory)))[0 .. retval_len];
     }
 
     /// Wraps OrtApi::CreateSharedAllocator
@@ -2109,7 +2109,7 @@ pub const Api = struct {
     Api.env.deinit();
 
     // Releasing the static oom error status
-    Error.Status.oom.deinit();
+    if (!Error.Status.released) Error.Status.oom.deinit();
   }
 
   /// Returns a null terminated string of the build info including git info and cxx flags.
@@ -2338,7 +2338,7 @@ pub const Error = struct {
           if (ec == @intFromEnum(Error.Code.Ok)) return;
           const name = "OrtError" ++ @tagName(@as(Error.Code, @enumFromInt(ec)));
           // this is cursed i know. If you know of a cleaner way to create an error from string, please open a PR asap
-          return @field(@Type(.{.error_set = &[_]std.builtin.Type.Error{.{.name = name}}}), name);
+          return @field(Set, name);
         },
         else => Set.OrtErrorUnknown,
       };
@@ -3719,7 +3719,7 @@ pub const Value = opaque {
       /// Get pointer to sparse values.
       pub fn getValues(self: *@This()) ![*]const u8 {
         var ptr: ?[*]const u8 = null;
-        try Error.check(Api.ort.GetSparseTensorValues.?(apiCast(self), cCast(&ptr)));
+        try Error.check(Api.ort.GetSparseTensorValues.?(apiCast(self), @ptrCast(&ptr)));
         return ptr orelse error.OutOfMemory;
       }
 
