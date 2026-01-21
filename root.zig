@@ -2761,11 +2761,10 @@ pub const Allocator = struct {
   /// Allocates a block of memory ofthe specified size.
   /// size: Size in bytes. asserts size is not 0.
   /// returns the pointer to the allocated block.
-  pub fn alloc(self: *@This(), comptime T: type, size: usize) ![]T {
-    std.debug.assert(@alignOf(T) <= 16);
+  pub fn alloc(self: *@This(), comptime T: type, size: usize) ![]align(@bitSizeOf(usize)) T {
     std.debug.assert(size != 0);
     const mem = self._alloc(@sizeOf(T) * size) orelse return error.OutOfMemory;
-    return @as([*]T, @alignCast(@ptrCast(mem.ptr)))[0 .. size];
+    return @as([*]align(@bitSizeOf(usize)) T, @alignCast(@ptrCast(mem.ptr)))[0 .. size];
   }
 
   pub fn _free(self: *@This(), p: ?[*]u8) void {
