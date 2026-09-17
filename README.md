@@ -67,4 +67,8 @@ const dep = b.dependency("onnxruntime", .{ .target = target, .optimize = optimiz
 exe.root_module.addImport("onnxruntime", dep.module("onnxruntime"));
 ```
 
-Tests run a real embedded Add model and assert exact inference values, tensor type/shape validation, copied and borrowed storage lifetimes, invalid model/name/input failures, and cleanup at every Zig allocation failure. [Fixture description](tests/README.md).
+Tests run real embedded Add and MatMul→Relu models, including parallel execution and optimized/unoptimized matrix inference. They assert exact values, tensor type/shape validation, copied and borrowed storage lifetimes, invalid model/name/input failures, and cleanup at every Zig allocation failure. [Fixture description](tests/README.md).
+
+## Licenses
+
+The Zig wrapper uses the repository MIT license. Native ONNX Runtime and its dependencies retain their upstream licenses. `zig build` installs ONNX Runtime's `LICENSE` and `ThirdPartyNotices.txt` under `share/licenses/onnxruntime`. Applications importing the module must carry the applicable upstream notices when distributing native binaries; dependency install steps are not automatically part of the application's install step.
