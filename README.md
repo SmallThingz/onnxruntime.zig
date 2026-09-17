@@ -1,128 +1,70 @@
-# onnxruntime-zig
+# onnxruntime.zig
 
-A type-safe, idiomatic, and effectively zero-overhead Zig wrapper for [ONNX Runtime](https://onnxruntime.ai/). 
-
-This library provides a high-level Zig interface to the ONNX Runtime C API, including support for inference, training, the Model Editor, and custom Execution Provider (EP) development.
-
-> [!IMPORTANT]  
-> **Development Status:** Tested on linux onty, if any bugs arise on other platforms, please open an issue, or better yet, a PR.
-
-## Key Features
-
-- **Full API Support**: Support for Inference, On-Device Training, Model Compilation, and the Model Editor API.
-- **Idiomatic V-Tables**: Seamlessly implement custom Execution Providers (EPs) or Operators (CustomOps) using standard Zig structs.
-- **Zig-Native Error Handling**: `OrtStatus` pointers are automatically converted to Zig error sets like `error.OrtErrorInvalidArgument`.
-- **Zero-Copy Performance**: Direct access to Tensor data and support for `IoBinding` for GPU-accelerated, zero-copy inference.
-
-## Setup
-
-### Requirements
- - **Zig Version:** `0.15.0` or higher.  
- - **ORT Version:** Supports features up to ORT `1.23` (including SyncStreams and new EP interfaces).
-
-### Installation
-Add `onnxruntime-zig` to your `build.zig.zon` and then add the module to your `build.zig`:
+Owned models and typed tensors for Zig 0.16.0, backed by ONNX Runtime 1.23.2. The package builds pinned upstream C++ sources and dependencies directly with `std.Build`. It does not invoke upstream CMake, Make, Python build scripts, or an installed ONNX Runtime library.
 
 ```zig
-const onnx_mod = b.dependency("onnxruntime", .{
-  .target = target,
-  .optimize = optimize,
-}).module("onnxruntime");
+const std = @import("std");
+const ort = @import("onnxruntime");
 
-exe.root_module.addImport("onnxruntime", onnx_mod);
-exe.linkSystemLibrary("onnxruntime");
-```
-
-### Initialization
-You must initialize the global API once before use.
-
-```zig
-const onnx = @import("onnxruntime");
-
-pub fn main() !void {
-  // Initialize the global environment and API structures
-  try onnx.Api.init(.{
-    .log_level = .warning,
-    .log_id = "my_app",
-    .editor = true, // Enable Model Editor API
-    .compiler = false, // disabled by default, you can omit this
-  }, .{
-    .compile_behavior = .panicking, // Panic if calling uninitialized compile functions
-  });
-
-  defer onnx.Api.deinit(); // cleanup after you are done using the api
+fn infer(allocator: std.mem.Allocator, model_bytes: []const u8) !void {
+    var environment = try ort.Environment.init(allocator, .{});
+    defer environment.deinit();
+    var model = try environment.load(model_bytes, .{});
+    defer model.deinit();
+    var x = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 1, 2, 3 });
+    defer x.deinit();
+    var y = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 4, 5, 6 });
+    defer y.deinit();
+    var outputs = try model.run(allocator, &.{
+        .{ .name = "x", .tensor = &x },
+        .{ .name = "y", .tensor = &y },
+    });
+    defer outputs.deinit();
+    const result = try outputs.values[0].data(f32);
+    std.debug.print("{any}\n", .{result});
 }
 ```
 
-### 2. Inference
-```zig
-const allocator = try onnx.Allocator.getDefault();
+## Build
 
-// Load a session
-const c_opts = try onnx.Session.Options{ .optimization_level = .ALL }.c();
-defer c_opts.deinit();
-var session = try onnx.Session.initZ("model.onnx", c_opts);
-defer session.deinit();
+The source build currently targets x86_64 Linux CPU inference, including ONNX Runtime's CPU/contrib kernels. GPU execution providers, training, and other target platforms are not enabled. First builds compile a substantial C++ dependency graph; subsequent builds reuse Zig's cache. See `zig build --help` for build options.
 
-// Prepare input tensor [1, 3]
-const dims = [_]i64{ 1, 3 };
-const input_val = try onnx.Value.Sub.Tensor.init(allocator, &dims, .f32);
-defer input_val.deinit();
-
-const data = try input_val.getData(f32);
-@memcpy(data, &[_]f32{ 1.0, 2.0, 3.0 });
-
-// Run
-var output_val: ?*onnx.Value = null;
-try session.run(null, &.{"input"}, &.{input_val.toValue()}, &.{"output"}, &.{output_val});
+```sh
+zig build test -j2 -Doptimize=ReleaseFast
+zig build example -j2 -Doptimize=ReleaseFast
 ```
 
-## Advanced Usage
+The native graph builds the host protobuf compiler as a Zig build artifact and generates model schemas through tracked build steps. No prebuilt inference binary is substituted. Keep target instruction workarounds separate from validation on CPUs that lack those instructions.
 
-### Custom Operators
-You can implement native ONNX operators directly in Zig:
+## API and ownership
+
+There is no mutable global API initialization. `Environment.init` obtains and checks the linked runtime's API table. Release all models before their environment. Native handles are owned: do not copy their owning structs or deinitialize them twice.
+
+- `environment.load(bytes, options)` borrows serialized ONNX bytes during loading.
+- `environment.open(allocator, path, options)` accepts a normal path slice and lets native file loading resolve external weight files.
+- `Model.Options` provides typed graph optimization and intra/inter-op thread counts (both default to one).
+- `model.inputNames(allocator)` / `outputNames(allocator)` return a `Names` owner containing ordinary string slices; call `deinit`.
+- `Tensor.fromSlice(T, dimensions, values)` validates nonnegative dimensions, checked element counts, and matching data length, then **copies** values into native owned storage. An empty shape is a scalar; zero dimensions describe empty tensors.
+- `Tensor.borrowSlice(T, dimensions, backing)` explicitly borrows mutable caller storage. Keep it alive through all runs and tensor deinitialization. Releasing this tensor never frees the backing storage.
+- `tensor.data(T)` checks the actual native element type and returns a borrowed mutable slice; `tensor.shape(allocator)` returns caller-owned dimensions.
+- `model.run(allocator, inputs)` returns all outputs in model order. `runSelected(allocator, inputs, names)` selects named outputs. Input/output names are ordinary slices and embedded NULs/duplicate input names are rejected.
+- `Outputs.deinit` releases every output tensor and the containing slice. Do not separately deinitialize tensors still owned by `Outputs`.
+
+Inference is synchronous. Retain tensors during runs and synchronize shared mutable tensor data. The typed API supports numeric and boolean tensors; non-tensor outputs return `NotTensor`. Full upstream interoperability remains available through `raw`, including operations outside this focused surface.
+
+Zig allocators own name lists, path conversions, run arrays, and metadata snapshots. ONNX Runtime owns native environment/session/tensor allocations through its native allocator. Allocation-failure tests cover the Zig-owned allocations; they do not claim to intercept every C++ allocation.
+
+Native status objects are always released and mapped to typed Zig errors. `TypeMismatch`, `ShapeMismatch`, `InvalidShape`, and `InvalidName` distinguish local validation failures from runtime errors such as `InvalidGraph`, `InvalidProtobuf`, and `InvalidArgument`.
+
+## Migration
+
+The old global C-shaped API has been replaced. Import `onnxruntime` and use `Environment`, `Model`, `Tensor`, and `Outputs` instead of manually managing C out-parameters or calling global initialization. For advanced C-level features use `raw.OrtGetApiBase`; its handles follow upstream ownership rules.
+
+Add the package at a pinned commit, then wire its module:
 
 ```zig
-const MyOp = struct {
-  ort_op: onnx.Op.Custom,
-  
-  pub fn getName(_: *const @This()) [*:0]const u8 { return "MyCustomOp"; }
-  pub fn getInputTypeCount(_: *const @This()) usize { return 1; }
-  pub fn getOutputTypeCount(_: *const @This()) usize { return 1; }
-  
-  pub fn createKernelV2(_: *const @This(), _: *const onnx.Api.ort, _: *const onnx.Op.KernelInfo) !*anyopaque {
-    return @ptrFromInt(0x1); // Return your kernel state
-  }
-
-  pub fn computeV2(kernel_state: *anyopaque, ctx: *onnx.Op.KernelContext) !void {
-    const input = (try ctx.getInput(0)).?;
-    // Your logic here...
-  }
-  
-  pub fn destroyKernel(kernel_state: *anyopaque) void { _ = kernel_state; }
-};
+const dep = b.dependency("onnxruntime", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("onnxruntime", dep.module("onnxruntime"));
 ```
 
-### Graph Surgery (Model Editor)
-Modify existing models or build new ones at runtime:
-
-```zig
-const graph = try onnx.Graph.init();
-const node = try onnx.Node.init(
-  "Relu", "", "my_node", 
-  &.{"X"}, &.{"Y"}, &.{}
-);
-try graph.addNode(node);
-try graph.setInputs(&.{val_info_x});
-try graph.setOutputs(&.{val_info_y});
-```
-
-## Contributing
-
-Contributions are welcome! Feel free to open a bug report or a Pull Request. Just keep the following in mind:
-- **Indentation**: 2 spaces.
-- **Type Safety**: Try to use `apiCast`, `apiCastTo` and other safe casts whenever possible.
-
-## License
-
-This project is licensed under the MIT License. Reference the ONNX Runtime license for the underlying C library.
+Tests run a real embedded Add model and assert exact inference values, tensor type/shape validation, copied and borrowed storage lifetimes, invalid model/name/input failures, and cleanup at every Zig allocation failure. [Fixture description](tests/README.md).

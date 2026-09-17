@@ -1,0 +1,1 @@
+Fixture `add.onnx` is a minimal ONNX IR 10/opset 13 model generated directly from the protobuf schema: two float32 inputs `x` and `y`, each shape `[3]`; one Add node producing `sum`, shape `[3]`. No weights or external files. Tests compare actual native inference against exact expected arithmetic.
