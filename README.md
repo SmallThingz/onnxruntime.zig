@@ -32,7 +32,11 @@ The source build currently targets x86_64 Linux CPU inference, including ONNX Ru
 ```sh
 zig build test -j2 -Doptimize=ReleaseFast
 zig build example -j2 -Doptimize=ReleaseFast
+zig build test -j2 -Doptimize=Debug -Dnative-optimize=ReleaseFast
+zig build test -j2 -Doptimize=ReleaseSafe -Dnative-optimize=ReleaseFast
 ```
+
+`native-optimize` defaults to `optimize`. Set it separately to keep the expensive native library cached while checking the Zig wrapper in Debug or ReleaseSafe; this does not enable safety instrumentation in the ReleaseFast C++ library.
 
 The native graph builds the host protobuf compiler as a Zig build artifact and generates model schemas through tracked build steps. No prebuilt inference binary is substituted. Keep target instruction workarounds separate from validation on CPUs that lack those instructions.
 
