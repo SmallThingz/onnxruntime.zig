@@ -197,3 +197,67 @@ test "zero-sized and borrowed scalar tensors preserve exact shape contracts" {
     try std.testing.expectError(error.InvalidShape, ort.Tensor.borrowSlice(f64, &.{ std.math.maxInt(i64), 8 }, &scalar_data));
     try std.testing.expectError(error.InvalidShape, ort.Tensor.fromSlice(u8, &.{ 0, -1 }, &.{}));
 }
+
+test "parallel execution options run actual inference" {
+    var environment = try ort.Environment.init(allocator, .{});
+    defer environment.deinit();
+    var model = try environment.load(model_bytes, .{
+        .execution_mode = .parallel,
+        .inter_op_threads = 2,
+        .intra_op_threads = 1,
+    });
+    defer model.deinit();
+    var x = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 2, -4, 0.25 });
+    defer x.deinit();
+    var y = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 3, 4, 0.75 });
+    defer y.deinit();
+    var outputs = try model.run(allocator, &.{
+        .{ .name = "x", .tensor = &x },
+        .{ .name = "y", .tensor = &y },
+    });
+    defer outputs.deinit();
+    try std.testing.expectEqualSlices(f32, &.{ 5, 0, 1 }, try outputs.values[0].data(f32));
+}
+
+test "native MatMul and Relu match full matrix reference through MLAS kernels" {
+    const rows = 32;
+    const inner = 64;
+    const columns = 48;
+    var a: [rows * inner]f32 = undefined;
+    var b: [inner * columns]f32 = undefined;
+    for (&a, 0..) |*value, i| value.* = @floatFromInt(@as(i32, @intCast((i * 7 + i / inner) % 13)) - 6);
+    for (&b, 0..) |*value, i| value.* = @floatFromInt(@as(i32, @intCast((i * 3 + i / columns) % 11)) - 5);
+    var expected: [rows * columns]f32 = undefined;
+    var zeros: usize = 0;
+    for (0..rows) |row| {
+        for (0..columns) |column| {
+            var sum: f32 = 0;
+            for (0..inner) |k| sum += a[row * inner + k] * b[k * columns + column];
+            expected[row * columns + column] = @max(sum, 0);
+            if (sum <= 0) zeros += 1;
+        }
+    }
+    try std.testing.expect(zeros > 0 and zeros < expected.len);
+    var environment = try ort.Environment.init(allocator, .{});
+    defer environment.deinit();
+    var input_a = try ort.Tensor.fromSlice(f32, &.{ rows, inner }, &a);
+    defer input_a.deinit();
+    var input_b = try ort.Tensor.fromSlice(f32, &.{ inner, columns }, &b);
+    defer input_b.deinit();
+    for ([_]ort.Optimization{ .disabled, .all }) |optimization| {
+        var model = try environment.load(@embedFile("matmul_relu.onnx"), .{ .optimization = optimization });
+        defer model.deinit();
+        var output = try model.run(allocator, &.{
+            .{ .name = "a", .tensor = &input_a },
+            .{ .name = "b", .tensor = &input_b },
+        });
+        defer output.deinit();
+        try std.testing.expectEqual(@as(usize, 1), output.values.len);
+        const shape = try output.values[0].shape(allocator);
+        defer allocator.free(shape);
+        try std.testing.expectEqualSlices(i64, &.{ rows, columns }, shape);
+        // Integer-valued inputs and sums are exactly representable in f32;
+        // every output is checked, including positive and clamped values.
+        try std.testing.expectEqualSlices(f32, &expected, try output.values[0].data(f32));
+    }
+}
