@@ -327,6 +327,7 @@ pub const Tensor = struct {
 
 fn elementType(comptime T: type) raw.ONNXTensorElementDataType {
     return switch (T) {
+        f16 => raw.ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16,
         f32 => raw.ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         f64 => raw.ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE,
         i8 => raw.ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8,

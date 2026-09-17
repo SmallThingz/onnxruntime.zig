@@ -24,6 +24,12 @@ test "owned typed tensor copies data and validates dimensions and element types"
     var empty = try ort.Tensor.fromSlice(u8, &.{0}, &.{});
     defer empty.deinit();
     try std.testing.expectEqual(@as(usize, 0), (try empty.data(u8)).len);
+    var half = try ort.Tensor.fromSlice(f16, &.{2}, &.{ 1.5, -2.25 });
+    defer half.deinit();
+    try std.testing.expectEqualSlices(f16, &.{ 1.5, -2.25 }, try half.data(f16));
+    var flags = try ort.Tensor.fromSlice(bool, &.{2}, &.{ true, false });
+    defer flags.deinit();
+    try std.testing.expectEqualSlices(bool, &.{ true, false }, try flags.data(bool));
 }
 
 test "native ONNX Add inference exposes owned names and exact output values" {
