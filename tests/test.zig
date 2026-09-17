@@ -110,3 +110,90 @@ test "every Zig allocation failure releases partial names and run arrays" {
     defer y.deinit();
     try std.testing.checkAllAllocationFailures(allocator, allocationWorkflow, .{ &model, &x, &y });
 }
+
+test "native inference rejects wrong input element types dimensions and rank" {
+    var environment = try ort.Environment.init(allocator, .{});
+    defer environment.deinit();
+    var model = try environment.load(model_bytes, .{});
+    defer model.deinit();
+    var y = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 4, 5, 6 });
+    defer y.deinit();
+    var wrong_type = try ort.Tensor.fromSlice(i32, &.{3}, &.{ 1, 2, 3 });
+    defer wrong_type.deinit();
+    var wrong_length = try ort.Tensor.fromSlice(f32, &.{2}, &.{ 1, 2 });
+    defer wrong_length.deinit();
+    var wrong_rank = try ort.Tensor.fromSlice(f32, &.{ 1, 3 }, &.{ 1, 2, 3 });
+    defer wrong_rank.deinit();
+    var empty = try ort.Tensor.fromSlice(f32, &.{0}, &.{});
+    defer empty.deinit();
+    for ([_]*const ort.Tensor{ &wrong_type, &wrong_length, &wrong_rank, &empty }) |invalid| {
+        try std.testing.expectError(error.InvalidArgument, model.run(allocator, &.{
+            .{ .name = "x", .tensor = invalid },
+            .{ .name = "y", .tensor = &y },
+        }));
+    }
+    // A failed run must leave the session usable.
+    var x = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 1, 2, 3 });
+    defer x.deinit();
+    var outputs = try model.run(allocator, &.{
+        .{ .name = "x", .tensor = &x },
+        .{ .name = "y", .tensor = &y },
+    });
+    defer outputs.deinit();
+    try std.testing.expectEqualSlices(f32, &.{ 5, 7, 9 }, try outputs.values[0].data(f32));
+    const shape = try outputs.values[0].shape(allocator);
+    defer allocator.free(shape);
+    try std.testing.expectEqualSlices(i64, &.{3}, shape);
+}
+
+test "run outputs and copied names outlive model and input tensors" {
+    var environment = try ort.Environment.init(allocator, .{});
+    defer environment.deinit();
+    const result = blk: {
+        var model = try environment.load(model_bytes, .{});
+        defer model.deinit();
+        var x = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 8, -1, 0.5 });
+        defer x.deinit();
+        var y = try ort.Tensor.fromSlice(f32, &.{3}, &.{ 2, 1, 1.5 });
+        defer y.deinit();
+        var names = try model.outputNames(allocator);
+        errdefer names.deinit();
+        const outputs = try model.run(allocator, &.{
+            .{ .name = "x", .tensor = &x },
+            .{ .name = "y", .tensor = &y },
+        });
+        break :blk .{ .names = names, .outputs = outputs };
+    };
+    var names = result.names;
+    defer names.deinit();
+    var outputs = result.outputs;
+    defer outputs.deinit();
+    try std.testing.expectEqualStrings("sum", names.items[0]);
+    try std.testing.expectEqualSlices(f32, &.{ 10, 0, 2 }, try outputs.values[0].data(f32));
+    const shape = try outputs.values[0].shape(allocator);
+    defer allocator.free(shape);
+    try std.testing.expectEqualSlices(i64, &.{3}, shape);
+    (try outputs.values[0].data(f32))[0] = 12;
+    try std.testing.expectEqual(@as(f32, 12), (try outputs.values[0].data(f32))[0]);
+}
+
+test "zero-sized and borrowed scalar tensors preserve exact shape contracts" {
+    var empty = try ort.Tensor.fromSlice(f32, &.{ 0, std.math.maxInt(i64), 8 }, &.{});
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), (try empty.data(f32)).len);
+    const dimensions = try empty.shape(allocator);
+    defer allocator.free(dimensions);
+    try std.testing.expectEqualSlices(i64, &.{ 0, std.math.maxInt(i64), 8 }, dimensions);
+    var scalar_data = [_]f64{4.25};
+    var scalar = try ort.Tensor.borrowSlice(f64, &.{}, &scalar_data);
+    defer scalar.deinit();
+    const scalar_shape = try scalar.shape(allocator);
+    defer allocator.free(scalar_shape);
+    try std.testing.expectEqual(@as(usize, 0), scalar_shape.len);
+    (try scalar.data(f64))[0] = -3.5;
+    try std.testing.expectEqual(@as(f64, -3.5), scalar_data[0]);
+    try std.testing.expectError(error.ShapeMismatch, ort.Tensor.borrowSlice(f64, &.{0}, &scalar_data));
+    try std.testing.expectError(error.InvalidShape, ort.Tensor.borrowSlice(f64, &.{-1}, &scalar_data));
+    try std.testing.expectError(error.InvalidShape, ort.Tensor.borrowSlice(f64, &.{ std.math.maxInt(i64), 8 }, &scalar_data));
+    try std.testing.expectError(error.InvalidShape, ort.Tensor.fromSlice(u8, &.{ 0, -1 }, &.{}));
+}
