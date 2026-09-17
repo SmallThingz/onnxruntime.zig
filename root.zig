@@ -120,6 +120,11 @@ pub const Optimization = enum(c_uint) {
     all = raw.ORT_ENABLE_ALL,
 };
 
+pub const ExecutionMode = enum(c_uint) {
+    sequential = raw.ORT_SEQUENTIAL,
+    parallel = raw.ORT_PARALLEL,
+};
+
 pub const Model = struct {
     api: *const raw.OrtApi,
     handle: *raw.OrtSession,
@@ -127,6 +132,7 @@ pub const Model = struct {
     pub const Options = struct {
         intra_op_threads: u16 = 1,
         inter_op_threads: u16 = 1,
+        execution_mode: ExecutionMode = .sequential,
         optimization: Optimization = .all,
 
         fn create(self: Options, api: *const raw.OrtApi) Error!*raw.OrtSessionOptions {
@@ -136,6 +142,7 @@ pub const Model = struct {
             errdefer api.ReleaseSessionOptions.?(options.?);
             try check(api, api.SetIntraOpNumThreads.?(options.?, self.intra_op_threads));
             try check(api, api.SetInterOpNumThreads.?(options.?, self.inter_op_threads));
+            try check(api, api.SetSessionExecutionMode.?(options.?, @intFromEnum(self.execution_mode)));
             try check(api, api.SetSessionGraphOptimizationLevel.?(options.?, @intFromEnum(self.optimization)));
             return options.?;
         }

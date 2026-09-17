@@ -42,7 +42,7 @@ There is no mutable global API initialization. `Environment.init` obtains and ch
 
 - `environment.load(bytes, options)` borrows serialized ONNX bytes during loading.
 - `environment.open(allocator, path, options)` accepts a normal path slice and lets native file loading resolve external weight files.
-- `Model.Options` provides typed graph optimization and intra/inter-op thread counts (both default to one).
+- `Model.Options` provides typed graph optimization, sequential/parallel execution mode, and intra/inter-op thread counts (both default to one). Inter-op parallelism is active only in parallel execution mode.
 - `model.inputNames(allocator)` / `outputNames(allocator)` return a `Names` owner containing ordinary string slices; call `deinit`.
 - `Tensor.fromSlice(T, dimensions, values)` validates nonnegative dimensions, checked element counts, and matching data length, then **copies** values into native owned storage. An empty shape is a scalar; zero dimensions describe empty tensors.
 - `Tensor.borrowSlice(T, dimensions, backing)` explicitly borrows mutable caller storage. Keep it alive through all runs and tensor deinitialization. Releasing this tensor never frees the backing storage.
