@@ -60,7 +60,8 @@ test "native ONNX Add inference exposes owned names and exact output values" {
     try std.testing.expectError(error.InvalidArgument, model.runSelected(allocator, &inputs, &.{"missing"}));
     try std.testing.expectError(error.InvalidName, model.run(allocator, &.{ inputs[0], inputs[0] }));
     try std.testing.expectError(error.InvalidName, model.runSelected(allocator, &inputs, &.{"sum\x00suffix"}));
-    try std.testing.expectError(error.InvalidArgument, model.run(allocator, inputs[0..1]));
+    // ORT reports a missing required tensor from the executing kernel.
+    try std.testing.expectError(error.RuntimeException, model.run(allocator, inputs[0..1]));
 }
 
 test "model loading rejects invalid bytes and options without leaking native handles" {
