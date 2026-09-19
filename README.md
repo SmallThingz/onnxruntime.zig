@@ -38,7 +38,7 @@ zig build test -j2 -Doptimize=ReleaseSafe -Dnative-optimize=ReleaseFast
 
 `native-optimize` defaults to `optimize`. Set it separately to keep the expensive native library cached while checking the Zig wrapper in Debug or ReleaseSafe; this does not enable safety instrumentation in the ReleaseFast C++ library.
 
-The native graph builds the host protobuf compiler as a Zig build artifact and generates model schemas through tracked build steps. No prebuilt inference binary is substituted. Keep target instruction workarounds separate from validation on CPUs that lack those instructions.
+The native graph builds the host protobuf compiler as a Zig build artifact and generates model schemas through tracked build steps. No prebuilt inference binary is substituted. The build applies the Zig/Clang AVX-512 workaround only to dispatched kernel translation units; it does not require a global `+evex512` target. AVX-512 kernels are compile-qualified only on hosts without those instructions; native inference tests exercise the host-supported dispatch path.
 
 ## API and ownership
 
