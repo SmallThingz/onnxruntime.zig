@@ -2,7 +2,7 @@
     .name = .onnxruntime,
     .version = "0.2.0",
     .fingerprint = 0xc45be4c79fc83c67,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .ort = .{ .url = "https://github.com/microsoft/onnxruntime/archive/refs/tags/v1.23.2.tar.gz", .hash = "N-V-__8AAO7HyiaHqDuiPPHRUs-tb5LQ_znmvB-eAkXGIPtD" },
         .abseil_cpp = .{ .url = "https://github.com/abseil/abseil-cpp/archive/refs/tags/20250512.0.tar.gz", .hash = "N-V-__8AAMVZnwAycY57HQCnLn4zSQAxWzyU9zLUyzN_S4hT" },

@@ -1,6 +1,6 @@
 # onnxruntime.zig
 
-Owned models and typed tensors for Zig 0.16.0, backed by ONNX Runtime 1.23.2. The package builds pinned upstream C++ sources and dependencies directly with `std.Build`. It does not invoke upstream CMake, Make, Python build scripts, or an installed ONNX Runtime library.
+Owned models and typed tensors for Zig 0.17.0, backed by ONNX Runtime 1.23.2. The package builds pinned upstream C++ sources and dependencies directly with `std.Build`. It does not invoke upstream CMake, Make, Python build scripts, or an installed ONNX Runtime library.
 
 ```zig
 const std = @import("std");
@@ -30,13 +30,18 @@ fn infer(allocator: std.mem.Allocator, model_bytes: []const u8) !void {
 The source build currently targets x86_64 Linux CPU inference, including ONNX Runtime's CPU/contrib kernels. GPU execution providers, training, and other target platforms are not enabled. First builds compile a substantial C++ dependency graph; subsequent builds reuse Zig's cache. See `zig build --help` for build options.
 
 ```sh
-zig build test -j2 -Doptimize=ReleaseFast
-zig build example -j2 -Doptimize=ReleaseFast
-zig build test -j2 -Doptimize=Debug -Dnative-optimize=ReleaseFast
-zig build test -j2 -Doptimize=ReleaseSafe -Dnative-optimize=ReleaseFast
+zig build check -j1
+zig build test -j2 -Doptimize=fast
+zig build example -j2 -Doptimize=fast
+zig build test -j2 -Doptimize=debug -Dnative-optimize=fast
+zig build test -j2 -Doptimize=safe -Dnative-optimize=fast
 ```
 
 `native-optimize` defaults to `optimize`. Set it separately to keep the expensive native library cached while checking the Zig wrapper in Debug or ReleaseSafe; this does not enable safety instrumentation in the ReleaseFast C++ library.
+
+`check` type-checks the Zig wrapper and inference tests without compiling or
+linking the native C++ libraries. `bindings` only generates the C declarations.
+Neither runs inference or replaces the linked runtime tests.
 
 The native graph builds the host protobuf compiler as a Zig build artifact and generates model schemas through tracked build steps. No prebuilt inference binary is substituted. The build applies the Zig/Clang AVX-512 workaround only to dispatched kernel translation units; it does not require a global `+evex512` target. AVX-512 kernels are compile-qualified only on hosts without those instructions; native inference tests exercise the host-supported dispatch path.
 

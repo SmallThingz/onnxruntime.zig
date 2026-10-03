@@ -63,7 +63,10 @@ pub fn cpuidVendor(b: *std.Build, dependency: *std.Build.Dependency) std.Build.L
 }
 
 fn transform(b: *std.Build, output: *std.Build.Step.WriteFile, dependency: *std.Build.Dependency, path: []const u8, replacements: []const [2][]const u8) std.Build.LazyPath {
-    var text = std.Io.Dir.cwd().readFileAlloc(b.graph.io, dependency.path(path).getPath(b), b.allocator, .limited(4 * 1024 * 1024)) catch @panic("cannot read pinned native source");
+    b.dependOnFileContents(dependency.path(path));
+    const directory = dependency.builder.root.openDir(b.graph.io, ".", .{}) catch @panic("cannot open pinned native source directory");
+    defer directory.close(b.graph.io);
+    var text = directory.readFileAlloc(b.graph.io, path, b.allocator, .limited(4 * 1024 * 1024)) catch @panic("cannot read pinned native source");
     for (replacements) |replacement| {
         const start = std.mem.indexOf(u8, text, replacement[0]) orelse @panic("native patch context missing");
         const end = start + replacement[0].len;
