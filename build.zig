@@ -5,7 +5,7 @@ const patches = @import("patches.zig");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const native_optimize = b.option(std.builtin.OptimizeMode, "native-optimize", "C++ runtime optimization (defaults to optimize)") orelse optimize;
+    const native_optimize = b.option(std.builtin.Optimize, "native-optimize", "C++ runtime optimization (defaults to optimize)") orelse optimize;
     if (target.result.os.tag != .linux or target.result.cpu.arch != .x86_64)
         @panic("The native CPU build currently supports x86_64 Linux; other targets are not yet qualified");
     const ort = b.dependency("ort", .{});
@@ -14,11 +14,11 @@ pub fn build(b: *std.Build) void {
     const absl = b.dependency("abseil_cpp", .{});
     const re2 = b.dependency("re2", .{});
     const release_flags: []const []const u8 = &.{ "-std=c++17", "-DNDEBUG", "-Wno-deprecated-declarations" };
-    const flags = joinFlags(b, if (native_optimize == .Debug) &.{ "-std=c++17", "-Wno-deprecated-declarations" } else release_flags, &.{"-Wno-deprecated-literal-operator"});
-    const proto_host = cppLibrary(b, "protobuf-host", b.graph.host, .ReleaseFast);
+    const flags = joinFlags(b, if (native_optimize == .debug) &.{ "-std=c++17", "-Wno-deprecated-declarations" } else release_flags, &.{"-Wno-deprecated-literal-operator"});
+    const proto_host = cppLibrary(b, "protobuf-host", b.graph.host, .fast);
     proto_host.root_module.addIncludePath(pb.path("src"));
     proto_host.root_module.addCSourceFiles(.{ .root = pb.path(""), .files = sources.libprotobuf, .flags = release_flags });
-    const protoc = b.addExecutable(.{ .name = "protoc", .root_module = b.createModule(.{ .target = b.graph.host, .optimize = .ReleaseFast, .link_libcpp = true }), .use_llvm = true, .use_lld = true });
+    const protoc = b.addExecutable(.{ .name = "protoc", .root_module = b.createModule(.{ .target = b.graph.host, .optimize = .fast, .link_libcpp = true }), .use_llvm = true, .use_lld = true });
     protoc.root_module.addIncludePath(pb.path("src"));
     protoc.root_module.addCSourceFiles(.{ .root = pb.path(""), .files = sources.libprotoc, .flags = release_flags });
     protoc.root_module.addCSourceFile(.{ .file = pb.path("src/google/protobuf/compiler/main.cc"), .flags = release_flags });
@@ -86,6 +86,28 @@ pub fn build(b: *std.Build) void {
     const mod = b.addModule("onnxruntime", .{ .root_source_file = b.path("root.zig"), .target = target, .optimize = optimize, .link_libc = true });
     mod.addIncludePath(ort.path("include/onnxruntime/core/session"));
     mod.linkLibrary(lib);
+    const bindings = b.addTranslateC(.{
+        .root_source_file = ort.path("include/onnxruntime/core/session/onnxruntime_c_api.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bindings.addIncludePath(ort.path("include/onnxruntime/core/session"));
+    mod.addImport("onnxruntime_c", bindings.createModule());
+    b.step("bindings", "Generate Zig declarations from the pinned C headers").dependOn(&bindings.step);
+    const check_module = b.createModule(.{
+        .root_source_file = b.path("root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "onnxruntime_c", .module = bindings.createModule() }},
+    });
+    const wrapper_check = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("tests/test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "onnxruntime", .module = check_module }},
+    }), .use_llvm = true });
+    b.step("check", "Type-check the wrapper and tests without building native libraries").dependOn(&wrapper_check.step);
     const tests = b.addTest(.{ .root_module = b.createModule(.{ .root_source_file = b.path("tests/test.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "onnxruntime", .module = mod }} }), .use_llvm = true, .use_lld = true });
     const run_tests = b.addRunArtifact(tests);
     run_tests.setCwd(b.path(""));
@@ -96,7 +118,7 @@ pub fn build(b: *std.Build) void {
     b.step("example", "Run the owned-tensor inference example").dependOn(&run_example.step);
 }
 
-fn cppLibrary(b: *std.Build, name: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Step.Compile {
+fn cppLibrary(b: *std.Build, name: []const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize) *std.Build.Step.Compile {
     return b.addLibrary(.{ .name = name, .linkage = .static, .root_module = b.createModule(.{ .target = target, .optimize = optimize, .link_libcpp = true }), .use_llvm = true, .use_lld = true });
 }
 

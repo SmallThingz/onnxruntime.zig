@@ -1,9 +1,7 @@
 const std = @import("std");
 
 /// Complete upstream C API for interoperability; normal use needs no C pointers.
-pub const raw = @cImport({
-    @cInclude("onnxruntime_c_api.h");
-});
+pub const raw = @import("onnxruntime_c");
 
 pub const Error = error{
     OutOfMemory,
@@ -74,7 +72,7 @@ pub const Environment = struct {
         const name = try terminated(allocator, options.name);
         defer allocator.free(name);
         var handle: ?*raw.OrtEnv = null;
-        try check(api, api.CreateEnv.?(@intFromEnum(options.log_level), name.ptr, &handle));
+        try check(api, api.CreateEnv.?(@backingInt(options.log_level), name.ptr, &handle));
         return .{ .api = api, .handle = handle.? };
     }
 
@@ -105,7 +103,7 @@ pub const Environment = struct {
             defer allocator.free(wide);
             try check(self.api, self.api.CreateSession.?(self.handle, wide.ptr, configured, &session));
         } else {
-            const terminated_path = try allocator.dupeZ(u8, path);
+            const terminated_path = try allocator.dupeSentinel(u8, path, 0);
             defer allocator.free(terminated_path);
             try check(self.api, self.api.CreateSession.?(self.handle, terminated_path.ptr, configured, &session));
         }
@@ -142,8 +140,8 @@ pub const Model = struct {
             errdefer api.ReleaseSessionOptions.?(options.?);
             try check(api, api.SetIntraOpNumThreads.?(options.?, self.intra_op_threads));
             try check(api, api.SetInterOpNumThreads.?(options.?, self.inter_op_threads));
-            try check(api, api.SetSessionExecutionMode.?(options.?, @intFromEnum(self.execution_mode)));
-            try check(api, api.SetSessionGraphOptimizationLevel.?(options.?, @intFromEnum(self.optimization)));
+            try check(api, api.SetSessionExecutionMode.?(options.?, @backingInt(self.execution_mode)));
+            try check(api, api.SetSessionGraphOptimizationLevel.?(options.?, @backingInt(self.optimization)));
             return options.?;
         }
     };
@@ -368,5 +366,5 @@ fn defaultAllocator(api: *const raw.OrtApi) Error!*raw.OrtAllocator {
 
 fn terminated(allocator: std.mem.Allocator, name: []const u8) Error![:0]u8 {
     if (std.mem.indexOfScalar(u8, name, 0) != null) return error.InvalidName;
-    return allocator.dupeZ(u8, name);
+    return allocator.dupeSentinel(u8, name, 0);
 }
